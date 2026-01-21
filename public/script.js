@@ -583,11 +583,13 @@ function readChunk(file, offset, length) {
 // --- 接收方逻辑 ---
 
 let pendingOffer = null;
-let receivedBlobs = []; // 存储已合并的大块 Blob
-let receivedBuffer = []; // 暂存当前的小块 ArrayBuffer
-let receivedBufferSize = 0; // 当前暂存区大小
-let receivedTotalSize = 0; // 总接收大小
-let incomingFileInfo = null;
+// 移除全局的接收状态变量，改为在 setupReceiverChannel 中使用闭包
+// let receivedBlobs = []; 
+// let receivedBuffer = []; 
+// let receivedBufferSize = 0; 
+// let receivedTotalSize = 0; 
+// let incomingFileInfo = null;
+let downloadDirectoryHandle = null; // 用于存储用户选择的下载目录句柄
 
 async function handleOffer(msg) {
     if (msg.transferType === 'text') {
@@ -598,18 +600,17 @@ async function handleOffer(msg) {
 
     pendingOffer = msg;
     pendingCandidates = []; // 清空之前的候选
-    incomingFileInfo = msg.fileInfo;
+    // incomingFileInfo = msg.fileInfo; // 不再使用全局变量
     
     // 自动接收，跳过确认弹窗
     console.log(`Auto accepting file from ${peers[msg.sender]?.name}`);
     await acceptTransfer(msg);
 }
 
-// 移除手动接收的事件绑定，保留拒绝按钮逻辑以防万一（虽然界面上不再主动显示）
+// 移除手动接收的事件绑定，保留拒绝按钮逻辑以防万一
 document.getElementById('btn-reject').onclick = () => {
     hideDialog(receiveDialog);
     pendingOffer = null;
-    // 可以在这里发送 reject 消息通知对方
 };
 
 document.getElementById('btn-accept').onclick = async () => {
@@ -619,15 +620,38 @@ document.getElementById('btn-accept').onclick = async () => {
     await acceptTransfer(pendingOffer);
 };
 
+// 添加设置下载目录的功能
+const downloadDirBtn = document.createElement('button');
+downloadDirBtn.textContent = '📂 启用自动保存到文件夹';
+downloadDirBtn.className = 'btn secondary';
+downloadDirBtn.style.marginTop = '10px';
+downloadDirBtn.style.width = '100%';
+downloadDirBtn.onclick = async () => {
+    try {
+        downloadDirectoryHandle = await window.showDirectoryPicker();
+        downloadDirBtn.textContent = '✅ 已启用自动保存';
+        downloadDirBtn.classList.remove('secondary');
+        downloadDirBtn.classList.add('primary');
+        alert('已启用自动保存！文件将直接写入您选择的文件夹，不再频繁弹窗。');
+    } catch (e) {
+        console.error('Failed to get directory handle:', e);
+        alert('无法启用自动保存 (可能是浏览器不支持或用户取消)');
+    }
+};
+// 将按钮添加到页面合适位置 (例如 my-info 下面)
+document.getElementById('my-info').appendChild(downloadDirBtn);
+
+
 async function acceptTransfer(offerMsg) {
     const pc = new RTCPeerConnection(rtcConfig);
-    activeConnection = { pc, role: 'receiver' };
+    activeConnection = { pc, role: 'receiver', peerId: offerMsg.sender }; // 记录 peerId 以便区分
     
     pc.oniceconnectionstatechange = () => {
         console.log('ICE state:', pc.iceConnectionState);
         if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
             if (offerMsg.transferType === 'file') {
-                alert(`连接断开 (State: ${pc.iceConnectionState})，请重试。`);
+                // alert(`连接断开 (State: ${pc.iceConnectionState})，请重试。`);
+                console.warn(`连接断开 (State: ${pc.iceConnectionState})`);
                 hideDialog(progressDialog);
             }
         }
@@ -635,7 +659,8 @@ async function acceptTransfer(offerMsg) {
 
     pc.ondatachannel = (event) => {
         event.channel.binaryType = 'arraybuffer';
-        setupReceiverChannel(event.channel, offerMsg.transferType, offerMsg.sender);
+        // 将 fileInfo 传递给 channel 设置函数
+        setupReceiverChannel(event.channel, offerMsg.transferType, offerMsg.sender, offerMsg.fileInfo);
     };
     
     pc.onicecandidate = (event) => {
@@ -670,22 +695,21 @@ async function acceptTransfer(offerMsg) {
     
     if (offerMsg.transferType === 'file') {
         showProgressDialog(`正在接收 ${offerMsg.fileInfo.name}...`, 0);
-        // 重置接收缓冲区
-        receivedBlobs = [];
-        receivedBuffer = [];
-        receivedBufferSize = 0;
-        receivedTotalSize = 0;
-        lastReceiverPercent = 0;
-        lastReceiverUpdateTime = 0;
-        incomingFileInfo = offerMsg.fileInfo;
+        // 这里不需要重置全局变量了，状态都在 setupReceiverChannel 内部
     }
 }
 
 let lastReceiverUpdateTime = 0;
-let lastReceiverPercent = 0;
+// let lastReceiverPercent = 0; // 似乎没用到，注释掉
 
-function setupReceiverChannel(channel, type, senderId) {
-    channel.onmessage = (event) => {
+function setupReceiverChannel(channel, type, senderId, fileInfo) {
+    // 接收状态局部化 (闭包)
+    let receivedBlobs = [];
+    let receivedBuffer = [];
+    let receivedBufferSize = 0;
+    let receivedTotalSize = 0;
+
+    channel.onmessage = async (event) => {
         if (type === 'text') {
             try {
                 const msg = JSON.parse(event.data);
@@ -706,23 +730,23 @@ function setupReceiverChannel(channel, type, senderId) {
             receivedBufferSize += chunkSize;
             receivedTotalSize += chunkSize;
             
-            // 每 10MB 合并一次 Blob，避免 ArrayBuffer 数组过大导致内存溢出
+            // 每 10MB 合并一次 Blob
             if (receivedBufferSize > 10 * 1024 * 1024) {
                 receivedBlobs.push(new Blob(receivedBuffer));
                 receivedBuffer = [];
                 receivedBufferSize = 0;
             }
             
-            // 节流更新接收进度：每 200ms 更新一次，避免频繁 DOM 操作阻塞主线程
+            // 节流更新接收进度
             const now = Date.now();
-            if (now - lastReceiverUpdateTime > 200 || receivedTotalSize >= incomingFileInfo.size) {
-                updateProgress(receivedTotalSize, incomingFileInfo.size);
+            if (now - lastReceiverUpdateTime > 200 || receivedTotalSize >= fileInfo.size) {
+                updateProgress(receivedTotalSize, fileInfo.size);
                 lastReceiverUpdateTime = now;
             }
             
-            if (receivedTotalSize >= incomingFileInfo.size) {
+            if (receivedTotalSize >= fileInfo.size) {
                 // 确保最后更新一次 100%
-                updateProgress(receivedTotalSize, incomingFileInfo.size);
+                updateProgress(receivedTotalSize, fileInfo.size);
                 
                 // 合并剩余数据
                 if (receivedBuffer.length > 0) {
@@ -730,25 +754,49 @@ function setupReceiverChannel(channel, type, senderId) {
                     receivedBuffer = [];
                     receivedBufferSize = 0;
                 }
-                saveFile();
+                
+                await saveFile(receivedBlobs, fileInfo);
                 setTimeout(() => hideDialog(progressDialog), 1000);
+                
+                // 传输完成后关闭连接，释放资源
+                setTimeout(() => {
+                    channel.close();
+                    // pc.close(); // 保持 PC 连接可能导致后续复用问题，暂时不主动关闭 PC，依靠 ICE 状态管理
+                }, 500);
             }
         }
     };
 }
 
-function saveFile() {
-    const blob = new Blob(receivedBlobs, { type: incomingFileInfo.type });
+async function saveFile(blobs, fileInfo) {
+    const blob = new Blob(blobs, { type: fileInfo.type });
+
+    // 优先使用 File System Access API (如果用户启用了)
+    if (downloadDirectoryHandle) {
+        try {
+            // 获取文件句柄 (create: true 表示创建新文件)
+            const fileHandle = await downloadDirectoryHandle.getFileHandle(fileInfo.name, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            console.log(`File saved to folder: ${fileInfo.name}`);
+            return;
+        } catch (e) {
+            console.error('Auto-save failed, falling back to download:', e);
+            // 如果自动保存失败（例如权限问题），回退到普通下载
+        }
+    }
+
+    // 回退方案：传统下载
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = incomingFileInfo.name;
+    a.download = fileInfo.name;
     a.click();
     
     // 清理
     setTimeout(() => {
         URL.revokeObjectURL(url);
-        receivedBlobs = []; // 释放内存
     }, 100);
 }
 
