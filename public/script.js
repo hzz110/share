@@ -245,6 +245,13 @@ function handleMqttMessage(topic, msg) {
             case 'candidate':
                 handleCandidate(msg);
                 break;
+            case 'transfer-complete':
+                if (peers[msg.sender] && peers[msg.sender].resolveTransfer) {
+                    console.log('Received transfer-complete signal');
+                    peers[msg.sender].resolveTransfer();
+                    peers[msg.sender].resolveTransfer = null;
+                }
+                break;
         }
     }
 }
@@ -477,11 +484,11 @@ async function startConnection(peerId, type, data, resolve, reject) {
     }
 
     if (type === 'file') {
-        setupSenderChannel(channel, type, data, resolve, reject);
+        setupSenderChannel(channel, type, data, resolve, reject, peerId);
         // 更新 activeConnection，但保留 pc
         activeConnection = { pc, channel, file: data, role: 'sender', peerId: peerId };
     } else {
-        setupSenderChannel(channel, type, data, resolve, reject);
+        setupSenderChannel(channel, type, data, resolve, reject, peerId);
         activeConnection = { pc, channel, text: data, role: 'sender', peerId: peerId };
     }
 
@@ -509,24 +516,43 @@ async function startConnection(peerId, type, data, resolve, reject) {
     sendSignalingMessage(peerId, 'offer', offerMsg);
 }
 
-function setupSenderChannel(channel, type, data, resolve, reject) {
+function setupSenderChannel(channel, type, data, resolve, reject, peerId) {
     channel.onopen = () => {
         console.log('Data channel open');
         if (type === 'file') {
             sendFileData(channel, data).then(() => {
-                // 发送数据完成，但等待接收端关闭通道（表示接收完成）
-                // 这样可以确保队列中的下一个文件不会在当前文件未完全接收时就开始
-                console.log('Data sent, waiting for receiver to close channel...');
-                // 稍微等待一下，如果接收端没有关闭，我们也强制 resolve，避免死锁
-                const timeout = setTimeout(() => {
-                    console.warn('Receiver did not close channel in time, proceeding...');
+                // 发送数据完成，等待接收端确认（通过信令或关闭通道）
+                console.log('Data sent, waiting for receiver confirmation...');
+                
+                let completed = false;
+                const cleanup = () => {
+                    if (completed) return;
+                    completed = true;
+                    if (peers[peerId]) peers[peerId].resolveTransfer = null;
+                    channel.onclose = () => console.log('Data channel closed after completion');
                     if (resolve) resolve();
-                }, 5000); // 5秒超时
+                };
 
+                // 1. 设置 10秒 超时（避免死锁）
+                const timeout = setTimeout(() => {
+                    console.warn('Transfer confirmation timeout, proceeding anyway...');
+                    cleanup();
+                }, 10000);
+
+                // 2. 监听信令 (推荐，准确)
+                if (peers[peerId]) {
+                    peers[peerId].resolveTransfer = () => {
+                        console.log('Received transfer-complete signal from receiver');
+                        clearTimeout(timeout);
+                        cleanup();
+                    };
+                }
+
+                // 3. 监听通道关闭 (兼容旧逻辑)
                 channel.onclose = () => {
                     console.log('Data channel closed by receiver');
                     clearTimeout(timeout);
-                    if (resolve) resolve();
+                    cleanup();
                 };
             }).catch(err => {
                 if (reject) reject(err);
@@ -536,8 +562,6 @@ function setupSenderChannel(channel, type, data, resolve, reject) {
             channel.send(JSON.stringify({ type: 'text', content: data }));
             // 发送完可以关闭
             setTimeout(() => {
-                // channel.close(); 
-                // pc.close(); // 可以关闭连接
                 if (resolve) resolve();
             }, 1000);
         }
@@ -558,7 +582,7 @@ async function sendFileData(channel, file) {
             // 动态背压控制：放宽缓冲区限制至 1MB
             // 缓冲区 > 1MB 时暂停，降到 256KB 以下恢复
             if (channel.bufferedAmount > 1024 * 1024) {
-                await new Promise(resolve => {
+                await new Promise((resolve, reject) => {
                     const check = () => {
                         if (channel.bufferedAmount < 256 * 1024) { 
                             channel.onbufferedamountlow = null;
@@ -566,8 +590,27 @@ async function sendFileData(channel, file) {
                         }
                     };
                     channel.onbufferedamountlow = check;
+                    
+                    // 增加超时检查，防止背压死锁 (2秒)
+                    const timeout = setTimeout(() => {
+                        if (channel.onbufferedamountlow) {
+                            console.warn('Backpressure timeout, forcing continue...');
+                            channel.onbufferedamountlow = null;
+                            // 检查连接状态，如果还活着就继续，否则报错
+                            if (channel.readyState === 'open') {
+                                resolve();
+                            } else {
+                                reject(new Error('Connection closed during backpressure'));
+                            }
+                        }
+                    }, 2000);
+
+                    // 同时也轮询一下，双重保险
                     setTimeout(() => {
-                        if (channel.onbufferedamountlow) check();
+                        if (channel.onbufferedamountlow) {
+                            clearTimeout(timeout);
+                            check();
+                        }
                     }, 50);
                 });
             }
@@ -675,7 +718,8 @@ downloadDirBtn.style.transition = 'all 0.3s ease';
 
 // 封装按钮状态更新函数
 function updateDownloadBtnState(state) {
-    const folderName = downloadDirectoryHandle ? downloadDirectoryHandle.name : '';
+    let folderName = downloadDirectoryHandle ? downloadDirectoryHandle.name : '';
+    if (!folderName) folderName = '默认文件夹';
     
     if (state === 'active') {
         downloadDirBtn.textContent = `✅ 已启用自动保存 (${folderName})`;
@@ -887,11 +931,14 @@ function setupReceiverChannel(channel, type, senderId, fileInfo) {
                 await saveFile(receivedBlobs, fileInfo);
                 setTimeout(() => hideDialog(progressDialog), 1000);
                 
+                // 发送确认信令，通知发送端可以继续下一个文件
+                sendSignalingMessage(senderId, 'transfer-complete', {});
+
                 // 传输完成后关闭连接，释放资源
                 setTimeout(() => {
                     channel.close();
                     // pc.close(); // 保持 PC 连接可能导致后续复用问题，暂时不主动关闭 PC，依靠 ICE 状态管理
-                }, 500);
+                }, 1000);
             }
         }
     };
