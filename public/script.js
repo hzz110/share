@@ -452,12 +452,11 @@ async function sendFileData(channel, file) {
         while (offset < file.size) {
             if (channel.readyState !== 'open') throw new Error('Connection closed');
 
-            // 动态背压控制：严格等待缓冲区清空 (仿 Snapdrop 策略)
-            // 这能确保网络拥塞时自动降速，且给心跳包留出通道
-            if (channel.bufferedAmount > 0) {
+            // 动态背压控制：缓冲区 > 64KB 时暂停，防止拥塞
+            if (channel.bufferedAmount > 64 * 1024) {
                 await new Promise(resolve => {
                     const check = () => {
-                        if (channel.bufferedAmount === 0) { 
+                        if (channel.bufferedAmount < 16 * 1024) { // 降到 16KB 以下再继续
                             channel.onbufferedamountlow = null;
                             resolve();
                         }
@@ -473,15 +472,12 @@ async function sendFileData(channel, file) {
             channel.send(chunk);
             offset += chunk.byteLength;
             
-            // 节流更新进度：每 1% 或至少每 500ms 更新一次，避免频繁 DOM 操作
-            const percent = Math.floor((offset / file.size) * 100);
+            // 节流更新进度：每 200ms 更新一次，避免频繁 DOM 操作阻塞主线程
             const now = Date.now();
-            if (percent > lastPercent || now - lastUpdateTime > 500) {
+            if (now - lastUpdateTime > 200 || offset >= file.size) {
                 updateProgress(offset, file.size);
-                lastPercent = percent;
                 lastUpdateTime = now;
             }
-        }
         }
 
         console.log('File sent successfully');
@@ -644,12 +640,10 @@ function setupReceiverChannel(channel, type, senderId) {
                 receivedBufferSize = 0;
             }
             
-            // 节流更新接收进度
+            // 节流更新接收进度：每 200ms 更新一次，避免频繁 DOM 操作阻塞主线程
             const now = Date.now();
-            const percent = Math.floor((receivedTotalSize / incomingFileInfo.size) * 100);
-            if (percent > lastReceiverPercent || now - lastReceiverUpdateTime > 500) {
+            if (now - lastReceiverUpdateTime > 200 || receivedTotalSize >= incomingFileInfo.size) {
                 updateProgress(receivedTotalSize, incomingFileInfo.size);
-                lastReceiverPercent = percent;
                 lastReceiverUpdateTime = now;
             }
             
