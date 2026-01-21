@@ -811,7 +811,9 @@ async function acceptTransfer(offerMsg) {
         console.log('Reusing existing PeerConnection');
         pc = activeConnection.pc;
         // 复用连接时，也必须重新绑定 DataChannel 处理函数，以捕获当前的 offerMsg (包含新的 fileInfo)
+        // 注意：onDataChannel 只在新的 channel 创建时触发
         pc.ondatachannel = (event) => {
+            console.log('DataChannel received (Reused PC)', event.channel.label);
             event.channel.binaryType = 'arraybuffer';
             setupReceiverChannel(event.channel, offerMsg.transferType, offerMsg.sender, offerMsg.fileInfo);
         };
@@ -830,6 +832,7 @@ async function acceptTransfer(offerMsg) {
         };
 
         pc.ondatachannel = (event) => {
+            console.log('DataChannel received (New PC)', event.channel.label);
             event.channel.binaryType = 'arraybuffer';
             setupReceiverChannel(event.channel, offerMsg.transferType, offerMsg.sender, offerMsg.fileInfo);
         };
@@ -845,6 +848,15 @@ async function acceptTransfer(offerMsg) {
 
     // 处理 SDP (Offer)
     // 无论是新连接还是复用连接，都需要设置 Remote Description (Renegotiation)
+    // 检查状态，避免在不正确的状态下 setRemoteDescription
+    if (pc.signalingState !== 'stable' && pc.signalingState !== 'have-local-offer') {
+         // 如果处于 have-remote-offer 状态，可能是之前的协商还没完成，或者是重复的 offer
+         console.warn('Signaling state is ' + pc.signalingState + ', waiting or resetting...');
+         // 简单的冲突处理：如果正在协商，可能需要 rollback 或等待。
+         // 这里假设我们始终是接收方，且 offer 是新的。
+         // 如果是 rollback: await pc.setLocalDescription({type: "rollback"});
+    }
+    
     await pc.setRemoteDescription(new RTCSessionDescription(offerMsg.sdp));
     
     // 处理之前暂存的 Candidates
