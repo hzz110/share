@@ -380,21 +380,19 @@ async function sendFileData(channel, file) {
         while (offset < file.size) {
             if (channel.readyState !== 'open') throw new Error('Connection closed');
 
-            // 动态背压控制：缓冲区上限 16MB，下限 1MB
-            if (channel.bufferedAmount > 16 * 1024 * 1024) {
+            // 动态背压控制：缓冲区上限 64KB (更严格的流控以适应移动端)
+            if (channel.bufferedAmount > 64 * 1024) {
                 await new Promise(resolve => {
                     const check = () => {
-                        if (channel.bufferedAmount < 1 * 1024 * 1024) { 
+                        if (channel.bufferedAmount < 32 * 1024) { 
                             channel.onbufferedamountlow = null;
                             resolve();
                         }
                     };
                     channel.onbufferedamountlow = check;
-                    // 只有在不支持 onbufferedamountlow 的浏览器才需要轮询，现代浏览器很少需要
-                    // 但为了稳妥，保留一个较长的轮询
                     setTimeout(() => {
                         if (channel.onbufferedamountlow) check();
-                    }, 100);
+                    }, 50);
                 });
             }
 
@@ -403,7 +401,10 @@ async function sendFileData(channel, file) {
             offset += chunk.byteLength;
             updateProgress(offset, file.size);
             
-            // 移除人为延迟，全速发送
+            // 每发送 2MB 让出一次 CPU，防止移动端 UI 线程卡死导致连接超时
+            if (offset % (2 * 1024 * 1024) < CHUNK_SIZE) {
+                 await new Promise(r => setTimeout(r, 0));
+            }
         }
 
         console.log('File sent successfully');
