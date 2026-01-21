@@ -434,46 +434,67 @@ async function startSendingText(peerId, text) {
 
 async function startConnection(peerId, type, data, resolve, reject) {
     console.log(`Starting ${type} transfer to ${peerId}`);
-    const pc = new RTCPeerConnection(rtcConfig);
+    let pc;
+    let channel;
     
-    // 创建数据通道
-    const channel = pc.createDataChannel('transfer');
-    channel.binaryType = 'arraybuffer';
-    
-    if (type === 'file') {
-        setupSenderChannel(channel, type, data, resolve, reject);
-        activeConnection = { pc, channel, file: data, role: 'sender' };
+    // 检查是否已有活跃连接且对方是同一个人 (发送端复用逻辑)
+    if (activeConnection && activeConnection.pc && 
+        (activeConnection.pc.connectionState === 'connected' || activeConnection.pc.connectionState === 'connecting') &&
+        activeConnection.role === 'sender' && // 确保自己之前的角色也是 sender
+        selectedPeerId === peerId) { // 这里 selectedPeerId 可能不太准，最好是 activeConnection 记录了 targetId
+        
+        console.log('Reusing existing PeerConnection (Sender)');
+        pc = activeConnection.pc;
+        // 创建新的 DataChannel 用于此次传输
+        channel = pc.createDataChannel('transfer');
+        channel.binaryType = 'arraybuffer';
     } else {
-        setupSenderChannel(channel, type, data, resolve, reject);
-        activeConnection = { pc, channel, text: data, role: 'sender' };
+        console.log('Creating new PeerConnection (Sender)');
+        pc = new RTCPeerConnection(rtcConfig);
+        
+        // 创建数据通道
+        channel = pc.createDataChannel('transfer');
+        channel.binaryType = 'arraybuffer';
+        
+        pc.oniceconnectionstatechange = () => {
+            console.log('ICE state:', pc.iceConnectionState);
+            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+                if (type === 'file') {
+                    alert(`连接断开 (State: ${pc.iceConnectionState})，请重试。如果频繁失败，请尝试刷新页面。`);
+                    hideDialog(progressDialog);
+                    if (reject) reject(new Error('ICE connection failed'));
+                }
+            }
+        };
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                sendSignalingMessage(peerId, 'candidate', {
+                    candidate: event.candidate
+                });
+            }
+        };
     }
 
-    pc.oniceconnectionstatechange = () => {
-        console.log('ICE state:', pc.iceConnectionState);
-        if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-            // 文字发送很快，通常不需要报错，除非一直在 connecting
-            if (type === 'file') {
-                alert(`连接断开 (State: ${pc.iceConnectionState})，请重试。如果频繁失败，请尝试刷新页面。`);
-                hideDialog(progressDialog);
-                if (reject) reject(new Error('ICE connection failed'));
-            }
-        }
-    };
+    if (type === 'file') {
+        setupSenderChannel(channel, type, data, resolve, reject);
+        // 更新 activeConnection，但保留 pc
+        activeConnection = { pc, channel, file: data, role: 'sender', peerId: peerId };
+    } else {
+        setupSenderChannel(channel, type, data, resolve, reject);
+        activeConnection = { pc, channel, text: data, role: 'sender', peerId: peerId };
+    }
 
-    pc.onicecandidate = (event) => {
-        if (event.candidate) {
-            sendSignalingMessage(peerId, 'candidate', {
-                candidate: event.candidate
-            });
-        }
-    };
-
+    // 无论是否复用，都发送 Offer 告知对方有新文件/消息
+    // 如果是复用，createOffer 会生成一个新的 Offer (包含新 DataChannel 的信息，如果有变化)
+    // 注意：如果是单纯复用 DataChannel (比如只发文字)，可能不需要 createOffer，但这里我们要发新文件，还是走标准流程稳妥
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
     const offerMsg = {
         sdp: offer,
-        transferType: type
+        transferType: type,
+        sender: myId // 确保包含 sender ID
     };
 
     if (type === 'file') {
