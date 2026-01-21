@@ -58,33 +58,46 @@ function generateRandomName() {
 
 async function getPublicIP() {
     const services = [
-        { url: 'https://www.cloudflare.com/cdn-cgi/trace', type: 'trace' },
-        { url: 'https://api.ipify.org?format=json', type: 'json', field: 'ip' },
-        { url: 'https://api.db-ip.com/v2/free/self', type: 'json', field: 'ipAddress' },
-        { url: 'https://ifconfig.me/ip', type: 'text' }
+        // 强制使用 IPv4 接口，因为 IPv6 每个设备通常不同，无法用于局域网发现
+        { url: 'https://api4.ipify.org?format=json', type: 'json', field: 'ip' },
+        { url: 'https://ipv4.icanhazip.com', type: 'text' },
+        { url: 'https://v4.ident.me', type: 'text' },
+        // 如果以上都失败（纯 IPv6 网络），尝试通用接口但可能获取到 IPv6
+        { url: 'https://www.cloudflare.com/cdn-cgi/trace', type: 'trace' }
     ];
 
     for (const service of services) {
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
+            const timeoutId = setTimeout(() => controller.abort(), 3000); 
             
             const res = await fetch(service.url, { signal: controller.signal });
             clearTimeout(timeoutId);
             
             if (!res.ok) continue;
 
+            let ip = null;
             if (service.type === 'json') {
                 const data = await res.json();
-                return data[service.field];
+                ip = data[service.field];
             } else if (service.type === 'text') {
-                return await res.text();
+                ip = (await res.text()).trim();
             } else if (service.type === 'trace') {
                 const text = await res.text();
                 const lines = text.split('\n');
                 const ipLine = lines.find(l => l.startsWith('ip='));
-                if (ipLine) return ipLine.split('=')[1];
+                if (ipLine) ip = ipLine.split('=')[1];
             }
+
+            // 检查是否为 IPv6 (包含冒号)
+            if (ip && ip.includes(':')) {
+                console.warn('Detected IPv6, skipping as it is likely unique per device:', ip);
+                // 继续尝试下一个服务，寻找 IPv4
+                continue; 
+            }
+
+            if (ip) return ip;
+
         } catch (e) {
             console.warn(`${service.url} failed:`, e);
         }

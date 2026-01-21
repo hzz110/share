@@ -28,9 +28,25 @@ body {
     box-sizing: border-box;
 }
 
-header {
-    text-align: center;
-    margin-bottom: 40px;
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 20px;
+    font-weight: bold;
+}
+
+.logo svg {
+    width: 32px;
+    height: 32px;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    margin-bottom: 20px;
 }
 
 #my-info {
