@@ -374,17 +374,20 @@ function setupSenderChannel(channel, type, data) {
 
 async function sendFileData(channel, file) {
     let offset = 0;
+    let lastPercent = 0;
+    let lastUpdateTime = Date.now();
     document.getElementById('transfer-status').textContent = `正在发送 ${file.name}...`;
 
     try {
         while (offset < file.size) {
             if (channel.readyState !== 'open') throw new Error('Connection closed');
 
-            // 动态背压控制：缓冲区上限 64KB (更严格的流控以适应移动端)
-            if (channel.bufferedAmount > 64 * 1024) {
+            // 动态背压控制：严格等待缓冲区清空 (仿 Snapdrop 策略)
+            // 这能确保网络拥塞时自动降速，且给心跳包留出通道
+            if (channel.bufferedAmount > 0) {
                 await new Promise(resolve => {
                     const check = () => {
-                        if (channel.bufferedAmount < 32 * 1024) { 
+                        if (channel.bufferedAmount === 0) { 
                             channel.onbufferedamountlow = null;
                             resolve();
                         }
@@ -399,12 +402,16 @@ async function sendFileData(channel, file) {
             const chunk = await readChunk(file, offset, CHUNK_SIZE);
             channel.send(chunk);
             offset += chunk.byteLength;
-            updateProgress(offset, file.size);
             
-            // 每发送 2MB 让出一次 CPU，防止移动端 UI 线程卡死导致连接超时
-            if (offset % (2 * 1024 * 1024) < CHUNK_SIZE) {
-                 await new Promise(r => setTimeout(r, 0));
+            // 节流更新进度：每 1% 或至少每 500ms 更新一次，避免频繁 DOM 操作
+            const percent = Math.floor((offset / file.size) * 100);
+            const now = Date.now();
+            if (percent > lastPercent || now - lastUpdateTime > 500) {
+                updateProgress(offset, file.size);
+                lastPercent = percent;
+                lastUpdateTime = now;
             }
+        }
         }
 
         console.log('File sent successfully');
@@ -529,9 +536,14 @@ async function acceptTransfer(offerMsg) {
         receivedBuffer = [];
         receivedBufferSize = 0;
         receivedTotalSize = 0;
+        lastReceiverPercent = 0;
+        lastReceiverUpdateTime = 0;
         incomingFileInfo = offerMsg.fileInfo;
     }
 }
+
+let lastReceiverUpdateTime = 0;
+let lastReceiverPercent = 0;
 
 function setupReceiverChannel(channel, type, senderId) {
     channel.onmessage = (event) => {
@@ -562,9 +574,19 @@ function setupReceiverChannel(channel, type, senderId) {
                 receivedBufferSize = 0;
             }
             
-            updateProgress(receivedTotalSize, incomingFileInfo.size);
+            // 节流更新接收进度
+            const now = Date.now();
+            const percent = Math.floor((receivedTotalSize / incomingFileInfo.size) * 100);
+            if (percent > lastReceiverPercent || now - lastReceiverUpdateTime > 500) {
+                updateProgress(receivedTotalSize, incomingFileInfo.size);
+                lastReceiverPercent = percent;
+                lastReceiverUpdateTime = now;
+            }
             
             if (receivedTotalSize >= incomingFileInfo.size) {
+                // 确保最后更新一次 100%
+                updateProgress(receivedTotalSize, incomingFileInfo.size);
+                
                 // 合并剩余数据
                 if (receivedBuffer.length > 0) {
                     receivedBlobs.push(new Blob(receivedBuffer));
