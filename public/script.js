@@ -18,7 +18,11 @@ function generateUUID() {
 let peers = {}; // 存储在线用户列表
 let activeConnection = null; // 当前活跃的连接对象 { pc, channel, ... }
 let pendingCandidates = []; // 暂存未建立连接时的 ICE Candidates
-const CHUNK_SIZE = 16 * 1024; // 16KB 是 WebRTC 最优推荐值
+
+// 检测是否为移动设备
+const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+// 移动端使用更小的分块 (8KB) 以减少主线程阻塞，PC 端使用标准 (16KB)
+const CHUNK_SIZE = isMobile ? 8 * 1024 : 16 * 1024; 
 
 const peersContainer = document.getElementById('peers-container');
 const myNameEl = document.getElementById('my-name');
@@ -457,8 +461,8 @@ function setupSenderChannel(channel, type, data) {
 
 async function sendFileData(channel, file) {
     let offset = 0;
-    let lastPercent = 0;
     let lastUpdateTime = Date.now();
+    let loopCount = 0; // 用于控制强制 yield 的计数器
     document.getElementById('transfer-status').textContent = `正在发送 ${file.name}...`;
 
     try {
@@ -479,6 +483,15 @@ async function sendFileData(channel, file) {
                         if (channel.onbufferedamountlow) check();
                     }, 50);
                 });
+            }
+
+            // 移动端强制 CPU 让渡：每发送 10 个块强制休息一下
+            // 手机浏览器主线程非常容易被密集循环占满，导致 WebSocket/ICE 心跳丢失从而断开连接
+            if (isMobile) {
+                loopCount++;
+                if (loopCount % 10 === 0) {
+                    await new Promise(r => setTimeout(r, 2)); // 暂停 2ms 让出主线程
+                }
             }
 
             const chunk = await readChunk(file, offset, CHUNK_SIZE);
