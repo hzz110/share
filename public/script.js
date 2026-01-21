@@ -733,7 +733,26 @@ let pendingOffer = null;
 // let incomingFileInfo = null;
 let downloadDirectoryHandle = null; // 用于存储用户选择的下载目录句柄
 
+// 接收队列
+let receiveQueue = [];
+let isReceivingFile = false; // 是否正在接收文件
+
 async function handleOffer(msg) {
+    // 检查是否正在接收文件（或发送文件，占用 activeConnection）
+    const isBusy = isReceivingFile || (activeConnection && activeConnection.role === 'sender' && isTransferring);
+    
+    // 如果忙碌，且不是来自同一个发送者的（理论上复用时不会发 Offer，但如果是不同类型可能会发）
+    // 这里简单处理：只要忙碌就加入队列，除非是文字消息（稍微特殊处理）
+    
+    if (isBusy) {
+        // 如果是文字消息，且当前不是正在传输大文件占用 bandwidth，也许可以插队？
+        // 但为了安全，统一入队
+        console.log('Receiver is busy, queuing offer from', msg.sender);
+        receiveQueue.push(msg);
+        showToast(`当前正忙，已将 ${peers[msg.sender]?.name || '未知用户'} 的请求加入队列...`);
+        return;
+    }
+
     if (msg.transferType === 'text') {
         // 文字聊天自动接收
         await acceptTransfer(msg);
@@ -744,9 +763,32 @@ async function handleOffer(msg) {
     pendingCandidates = []; // 清空之前的候选
     // incomingFileInfo = msg.fileInfo; // 不再使用全局变量
     
+    // 标记为正在接收
+    isReceivingFile = true;
+    
     // 自动接收，跳过确认弹窗
     console.log(`Auto accepting file from ${peers[msg.sender]?.name}`);
     await acceptTransfer(msg);
+}
+
+// 处理接收队列
+async function processReceiveQueue() {
+    if (receiveQueue.length === 0) {
+        isReceivingFile = false;
+        return;
+    }
+    
+    const nextMsg = receiveQueue.shift();
+    console.log('Processing queued offer from', nextMsg.sender);
+    
+    // 递归调用 handleOffer 处理下一个
+    // 注意：handleOffer 内部会再次检查状态，所以这里我们需要确保状态被正确重置
+    // 但 handleOffer 会设置 isReceivingFile = true
+    // 所以这里调用 handleOffer 是安全的，因为它会发现 isReceivingFile 已经是 false (我们刚重置的吗？不，我们传进去时要是 false)
+    
+    // 这里直接重置一下状态确保 handleOffer 能通过
+    isReceivingFile = false; 
+    await handleOffer(nextMsg);
 }
 
 // 移除手动接收的事件绑定，保留拒绝按钮逻辑以防万一
@@ -1033,6 +1075,11 @@ function handleIncomingChannel(channel, senderId) {
                 fileInfo = null;
                 receivedBlobs = [];
                 receivedSize = 0;
+
+                // 检查是否有排队的接收任务
+                setTimeout(() => {
+                    processReceiveQueue();
+                }, 1500); // 稍微延迟，确保UI和清理完成
             }
         } else if (typeof data === 'string' && !fileInfo) {
              // 可能是普通文本聊天
