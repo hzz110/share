@@ -401,7 +401,12 @@ async function processQueue() {
     if (isTransferring || transferQueue.length === 0) return;
     
     isTransferring = true;
-    const { peerId, file } = transferQueue.shift();
+    const item = transferQueue.shift();
+    const { peerId, file } = item;
+    
+    // 将批次信息附加到文件对象上，以便传递给 setupSenderChannel
+    if (item.batchIndex) file.batchIndex = item.batchIndex;
+    if (item.batchTotal) file.batchTotal = item.batchTotal;
     
     try {
         await startSendingFile(peerId, file);
@@ -418,8 +423,14 @@ fileInput.onchange = (e) => {
     const files = Array.from(e.target.files);
     if (files.length === 0) return;
     
-    files.forEach(file => {
-        transferQueue.push({ peerId: selectedPeerId, file });
+    const total = files.length;
+    files.forEach((file, index) => {
+        transferQueue.push({ 
+            peerId: selectedPeerId, 
+            file,
+            batchIndex: index + 1,
+            batchTotal: total
+        });
     });
     
     processQueue();
@@ -522,7 +533,9 @@ function setupSenderChannel(channel, type, data, resolve, reject, peerId) {
                  type: 'file-info',
                  name: data.name,
                  size: data.size,
-                 fileType: data.type
+                 fileType: data.type,
+                 batchIndex: data.batchIndex,
+                 batchTotal: data.batchTotal
              };
              channel.send(JSON.stringify(meta));
         } else {
@@ -914,10 +927,13 @@ function handleIncomingChannel(channel, senderId) {
                     fileInfo = {
                         name: msg.name,
                         size: msg.size,
-                        type: msg.fileType
+                        type: msg.fileType,
+                        batchIndex: msg.batchIndex,
+                        batchTotal: msg.batchTotal
                     };
                     // 初始化 UI
-                    showProgressDialog(`正在接收 ${fileInfo.name}...`, 0);
+                    const indexStr = (fileInfo.batchIndex && fileInfo.batchTotal) ? ` (${fileInfo.batchIndex}/${fileInfo.batchTotal})` : '';
+                    showProgressDialog(`正在接收 ${fileInfo.name}${indexStr}...`, 0);
                     return;
                 } else if (msg.type === 'text') {
                     // 兼容旧的文本消息格式
