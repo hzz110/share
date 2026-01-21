@@ -21,10 +21,20 @@ let pendingCandidates = []; // 暂存未建立连接时的 ICE Candidates
 
 // 检测是否为移动设备
 const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-// 统一使用 32KB 分块，平衡速度与稳定性
-const CHUNK_SIZE = 32 * 1024; 
+// 极限提速：使用 64KB 分块，减少 JS 调用次数
+const CHUNK_SIZE = 64 * 1024; 
 
 const peersContainer = document.getElementById('peers-container');
+
+// 生成设备唯一颜色 (Hash string to color)
+function getDeviceColor(name) {
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+        hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
+    return '#' + '00000'.substring(0, 6 - c.length) + c;
+}
 const myNameEl = document.getElementById('my-name');
 const fileInput = document.getElementById('file-input');
 const receiveDialog = document.getElementById('receive-dialog');
@@ -298,6 +308,8 @@ function renderPeers() {
         const icon = document.createElement('div');
         icon.className = 'device-icon peer';
         icon.textContent = user.name.substring(0, 2);
+        // 设置唯一颜色边框，便于区分
+        icon.style.borderColor = getDeviceColor(user.name);
         
         const name = document.createElement('div');
         name.className = 'peer-name';
@@ -469,11 +481,12 @@ async function sendFileData(channel, file) {
         while (offset < file.size) {
             if (channel.readyState !== 'open') throw new Error('Connection closed');
 
-            // 动态背压控制：缓冲区 > 64KB 时暂停，防止拥塞
-            if (channel.bufferedAmount > 64 * 1024) {
+            // 动态背压控制：放宽缓冲区限制
+            // 缓冲区 > 256KB 时暂停，降到 64KB 以下恢复
+            if (channel.bufferedAmount > 256 * 1024) {
                 await new Promise(resolve => {
                     const check = () => {
-                        if (channel.bufferedAmount < 16 * 1024) { // 降到 16KB 以下再继续
+                        if (channel.bufferedAmount < 64 * 1024) { 
                             channel.onbufferedamountlow = null;
                             resolve();
                         }
@@ -485,12 +498,12 @@ async function sendFileData(channel, file) {
                 });
             }
 
-            // 移动端强制 CPU 让渡：大幅降低频率，每发送约 1MB (32 chunks * 32KB) 才休息一次
-            // 既保证了心跳包发送，又避免了频繁 await 导致的性能损耗
+            // 移动端强制 CPU 让渡：进一步减少频率
+            // 每发送约 2MB (32 chunks * 64KB) 才休息一次，且只休息一瞬间
             if (isMobile) {
                 loopCount++;
                 if (loopCount % 32 === 0) {
-                    await new Promise(r => setTimeout(r, 0)); // 仅让出时间片，不强制睡眠太久
+                    await new Promise(r => setTimeout(r, 0)); 
                 }
             }
 
