@@ -514,7 +514,20 @@ function setupSenderChannel(channel, type, data, resolve, reject) {
         console.log('Data channel open');
         if (type === 'file') {
             sendFileData(channel, data).then(() => {
-                if (resolve) resolve();
+                // 发送数据完成，但等待接收端关闭通道（表示接收完成）
+                // 这样可以确保队列中的下一个文件不会在当前文件未完全接收时就开始
+                console.log('Data sent, waiting for receiver to close channel...');
+                // 稍微等待一下，如果接收端没有关闭，我们也强制 resolve，避免死锁
+                const timeout = setTimeout(() => {
+                    console.warn('Receiver did not close channel in time, proceeding...');
+                    if (resolve) resolve();
+                }, 5000); // 5秒超时
+
+                channel.onclose = () => {
+                    console.log('Data channel closed by receiver');
+                    clearTimeout(timeout);
+                    if (resolve) resolve();
+                };
             }).catch(err => {
                 if (reject) reject(err);
             });
@@ -575,7 +588,9 @@ async function sendFileData(channel, file) {
             // 节流更新进度：每 200ms 更新一次，避免频繁 DOM 操作阻塞主线程
             const now = Date.now();
             if (now - lastUpdateTime > 200 || offset >= file.size) {
-                updateProgress(offset, file.size);
+                // 计算实际发送进度 (减去还在缓冲区的)
+                const sent = offset - channel.bufferedAmount;
+                updateProgress(sent > 0 ? sent : 0, file.size);
                 lastUpdateTime = now;
             }
         }
@@ -660,14 +675,16 @@ downloadDirBtn.style.transition = 'all 0.3s ease';
 
 // 封装按钮状态更新函数
 function updateDownloadBtnState(state) {
+    const folderName = downloadDirectoryHandle ? downloadDirectoryHandle.name : '';
+    
     if (state === 'active') {
-        downloadDirBtn.textContent = '✅ 已启用自动保存';
+        downloadDirBtn.textContent = `✅ 已启用自动保存 (${folderName})`;
         downloadDirBtn.style.backgroundColor = '#1e3a29'; // 暗绿色
         downloadDirBtn.style.borderColor = '#4caf50';
         downloadDirBtn.style.color = '#4caf50';
         downloadDirBtn.style.borderStyle = 'solid';
     } else if (state === 'pending') {
-        downloadDirBtn.textContent = '📂 点击恢复自动保存权限';
+        downloadDirBtn.textContent = `📂 点击恢复自动保存到 "${folderName}"`;
         downloadDirBtn.style.backgroundColor = '#2d2d2d';
         downloadDirBtn.style.borderColor = '#ff9800'; // 橙色提示
         downloadDirBtn.style.color = '#ff9800';
