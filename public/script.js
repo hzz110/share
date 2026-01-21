@@ -648,23 +648,52 @@ document.getElementById('btn-accept').onclick = async () => {
 // 添加设置下载目录的功能
 const downloadDirBtn = document.createElement('button');
 downloadDirBtn.textContent = '📂 启用自动保存到文件夹';
-downloadDirBtn.className = 'btn'; // 移除 secondary，使用默认或自定义
+downloadDirBtn.className = 'btn';
 downloadDirBtn.style.marginTop = '15px';
 downloadDirBtn.style.width = '100%';
-downloadDirBtn.style.backgroundColor = '#2d2d2d'; // 深灰色背景，不突兀
+downloadDirBtn.style.backgroundColor = '#2d2d2d';
 downloadDirBtn.style.color = '#ccc';
-downloadDirBtn.style.border = '1px dashed #555'; // 虚线边框，像一个放置区域
+downloadDirBtn.style.border = '1px dashed #555';
 downloadDirBtn.style.borderRadius = '8px';
 downloadDirBtn.style.padding = '12px';
 downloadDirBtn.style.transition = 'all 0.3s ease';
 
+// 封装按钮状态更新函数
+function updateDownloadBtnState(state) {
+    if (state === 'active') {
+        downloadDirBtn.textContent = '✅ 已启用自动保存';
+        downloadDirBtn.style.backgroundColor = '#1e3a29'; // 暗绿色
+        downloadDirBtn.style.borderColor = '#4caf50';
+        downloadDirBtn.style.color = '#4caf50';
+        downloadDirBtn.style.borderStyle = 'solid';
+    } else if (state === 'pending') {
+        downloadDirBtn.textContent = '📂 点击恢复自动保存权限';
+        downloadDirBtn.style.backgroundColor = '#2d2d2d';
+        downloadDirBtn.style.borderColor = '#ff9800'; // 橙色提示
+        downloadDirBtn.style.color = '#ff9800';
+        downloadDirBtn.style.borderStyle = 'dashed';
+    } else {
+        downloadDirBtn.textContent = '📂 启用自动保存到文件夹';
+        downloadDirBtn.style.backgroundColor = '#2d2d2d';
+        downloadDirBtn.style.borderColor = '#555';
+        downloadDirBtn.style.color = '#ccc';
+        downloadDirBtn.style.borderStyle = 'dashed';
+    }
+}
+
 downloadDirBtn.onmouseover = () => {
+    if (downloadDirBtn.textContent.includes('已启用')) return;
     downloadDirBtn.style.borderColor = '#4285f4';
     downloadDirBtn.style.color = '#fff';
     downloadDirBtn.style.backgroundColor = '#333';
 };
 downloadDirBtn.onmouseout = () => {
-    if (!downloadDirectoryHandle) {
+    if (downloadDirBtn.textContent.includes('已启用')) return;
+    if (downloadDirBtn.textContent.includes('恢复')) {
+        downloadDirBtn.style.borderColor = '#ff9800';
+        downloadDirBtn.style.color = '#ff9800';
+        downloadDirBtn.style.backgroundColor = '#2d2d2d';
+    } else {
         downloadDirBtn.style.borderColor = '#555';
         downloadDirBtn.style.color = '#ccc';
         downloadDirBtn.style.backgroundColor = '#2d2d2d';
@@ -673,27 +702,35 @@ downloadDirBtn.onmouseout = () => {
 
 downloadDirBtn.onclick = async () => {
     try {
-        // 请求读写权限
+        // 如果已经有句柄（比如从 DB 恢复的），只需要验证权限
+        if (downloadDirectoryHandle) {
+             const hasPermission = await verifyPermission(downloadDirectoryHandle, true);
+             if (hasPermission) {
+                 await saveDirectoryHandleToDB(downloadDirectoryHandle); // 刷新 DB
+                 updateDownloadBtnState('active');
+                 alert('自动保存权限已恢复！');
+                 return;
+             }
+        }
+
+        // 否则重新请求
         downloadDirectoryHandle = await window.showDirectoryPicker({
             mode: 'readwrite'
         });
         
-        // 立即验证权限 (确保在用户点击时获得授权)
         const hasPermission = await verifyPermission(downloadDirectoryHandle, true);
         if (!hasPermission) {
             throw new Error('未获得写入权限');
         }
 
-        downloadDirBtn.textContent = '✅ 已启用自动保存';
-        downloadDirBtn.style.backgroundColor = '#1e3a29'; // 暗绿色背景
-        downloadDirBtn.style.borderColor = '#4caf50';
-        downloadDirBtn.style.color = '#4caf50';
-        downloadDirBtn.style.borderStyle = 'solid';
+        // 保存到 DB
+        await saveDirectoryHandleToDB(downloadDirectoryHandle);
+
+        updateDownloadBtnState('active');
         
         alert('已启用自动保存！文件将直接写入您选择的文件夹，不再频繁弹窗。');
     } catch (e) {
         console.error('Failed to get directory handle:', e);
-        // 如果取消了，不报错，只是不改变状态
         if (e.name !== 'AbortError') {
              alert('无法启用自动保存: ' + e.message);
         }
@@ -712,7 +749,11 @@ async function acceptTransfer(offerMsg) {
         
         console.log('Reusing existing PeerConnection');
         pc = activeConnection.pc;
-        // 如果复用连接，不需要重新设置 activeConnection，只需要更新 role 等（如果需要）
+        // 复用连接时，也必须重新绑定 DataChannel 处理函数，以捕获当前的 offerMsg (包含新的 fileInfo)
+        pc.ondatachannel = (event) => {
+            event.channel.binaryType = 'arraybuffer';
+            setupReceiverChannel(event.channel, offerMsg.transferType, offerMsg.sender, offerMsg.fileInfo);
+        };
     } else {
         console.log('Creating new PeerConnection');
         pc = new RTCPeerConnection(rtcConfig);
@@ -723,21 +764,12 @@ async function acceptTransfer(offerMsg) {
             if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
                 if (offerMsg.transferType === 'file') {
                     console.warn(`连接断开 (State: ${pc.iceConnectionState})`);
-                    // 只有当不是传输结束后的正常断开时才隐藏进度条
-                    // 实际上这里很难判断，暂时不主动隐藏，依靠传输完成的逻辑来隐藏
                 }
             }
         };
 
         pc.ondatachannel = (event) => {
             event.channel.binaryType = 'arraybuffer';
-            // 注意：这里可能需要从 event.channel.label 或其他方式获取 fileInfo，
-            // 但标准做法是信令传递 fileInfo，闭包捕获
-            // 由于 ondatachannel 是针对整个 PC 的，我们需要确保正确关联 fileInfo
-            // 简单起见，我们假设当前 pendingOffer 对应这个 channel
-            // *风险*：如果并发多个文件，这里可能会乱。但目前 acceptTransfer 是串行的。
-            // 更好的方式：DataChannel label 包含 fileId，或者通过信令带上 id。
-            // 但目前 sender 是串行发送，所以 pendingOffer 应该是最新的。
             setupReceiverChannel(event.channel, offerMsg.transferType, offerMsg.sender, offerMsg.fileInfo);
         };
         
@@ -968,3 +1000,73 @@ function formatBytes(bytes, decimals = 2) {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
+
+// --- IndexedDB Helpers ---
+const DB_NAME = 'LocalDropDB';
+const STORE_NAME = 'settings';
+
+function openDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+        request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                db.createObjectStore(STORE_NAME);
+            }
+        };
+    });
+}
+
+async function saveDirectoryHandleToDB(handle) {
+    try {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+            store.put(handle, 'downloadHandle');
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        });
+    } catch (e) {
+        console.error('Failed to save handle to DB:', e);
+    }
+}
+
+async function getDirectoryHandleFromDB() {
+    try {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, 'readonly');
+            const store = tx.objectStore(STORE_NAME);
+            const request = store.get('downloadHandle');
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    } catch (e) {
+        console.error('Failed to get handle from DB:', e);
+        return null;
+    }
+}
+
+// Initialize on load
+(async () => {
+    try {
+        const handle = await getDirectoryHandleFromDB();
+        if (handle) {
+            downloadDirectoryHandle = handle;
+            // Update button UI to indicate a folder is remembered but needs verification
+            if (typeof updateDownloadBtnState === 'function') {
+                // Check if we already have permission (sometimes persists in same session or trusted sites)
+                // verifyPermission(handle, false) doesn't trigger prompt usually? 
+                // Actually 'readwrite' prompt is always required unless recently granted.
+                // Let's verify 'read' first? No, we need write.
+                // Just set to pending state.
+                updateDownloadBtnState('pending');
+            }
+        }
+    } catch (e) {
+        console.log('No saved directory handle or IDB error:', e);
+    }
+})();
