@@ -505,11 +505,7 @@ async function startConnection(peerId, type, data, resolve, reject) {
     };
 
     if (type === 'file') {
-        offerMsg.fileInfo = {
-            name: data.name,
-            size: data.size,
-            type: data.type
-        };
+        // offerMsg.fileInfo = ... // 不再依赖 offerMsg 中的文件信息
         showProgressDialog(`等待对方接收...`, 0);
     }
 
@@ -519,6 +515,22 @@ async function startConnection(peerId, type, data, resolve, reject) {
 function setupSenderChannel(channel, type, data, resolve, reject, peerId) {
     channel.onopen = () => {
         console.log('Data channel open');
+        
+        // 立即发送元数据 (In-Band Metadata)，解决复用连接时的状态同步问题
+        if (type === 'file') {
+             const meta = {
+                 type: 'file-info',
+                 name: data.name,
+                 size: data.size,
+                 fileType: data.type
+             };
+             channel.send(JSON.stringify(meta));
+        } else {
+             // 文字聊天也可以发送个 meta，或者直接发内容
+             // 之前的逻辑是直接发内容 { type: 'text', content: ... }
+             // 保持不变，接收端根据 type 判断
+        }
+
         if (type === 'file') {
             sendFileData(channel, data).then(() => {
                 // 发送数据完成，等待接收端确认（通过信令或关闭通道）
@@ -810,13 +822,9 @@ async function acceptTransfer(offerMsg) {
         
         console.log('Reusing existing PeerConnection');
         pc = activeConnection.pc;
-        // 复用连接时，也必须重新绑定 DataChannel 处理函数，以捕获当前的 offerMsg (包含新的 fileInfo)
-        // 注意：onDataChannel 只在新的 channel 创建时触发
-        pc.ondatachannel = (event) => {
-            console.log('DataChannel received (Reused PC)', event.channel.label);
-            event.channel.binaryType = 'arraybuffer';
-            setupReceiverChannel(event.channel, offerMsg.transferType, offerMsg.sender, offerMsg.fileInfo);
-        };
+        // 复用连接时，不需要重新绑定 ondatachannel，因为我们使用了持久化的通用处理函数
+        // 如果之前的逻辑是覆盖 ondatachannel，现在应该停止这样做
+        // pc.ondatachannel = ... // REMOVED
     } else {
         console.log('Creating new PeerConnection');
         pc = new RTCPeerConnection(rtcConfig);
@@ -831,10 +839,10 @@ async function acceptTransfer(offerMsg) {
             }
         };
 
+        // 绑定持久化的通用处理函数
         pc.ondatachannel = (event) => {
-            console.log('DataChannel received (New PC)', event.channel.label);
-            event.channel.binaryType = 'arraybuffer';
-            setupReceiverChannel(event.channel, offerMsg.transferType, offerMsg.sender, offerMsg.fileInfo);
+            console.log('DataChannel received', event.channel.label);
+            handleIncomingChannel(event.channel, offerMsg.sender);
         };
         
         pc.onicecandidate = (event) => {
@@ -884,21 +892,126 @@ async function acceptTransfer(offerMsg) {
     }
 }
 
-let lastReceiverUpdateTime = 0;
-// let lastReceiverPercent = 0; // 似乎没用到，注释掉
-
-function setupReceiverChannel(channel, type, senderId, fileInfo) {
-    // 接收状态局部化 (闭包)
+// 通用 DataChannel 处理函数 (Handles In-Band Metadata)
+function handleIncomingChannel(channel, senderId) {
+    channel.binaryType = 'arraybuffer';
+    
+    // 状态变量
+    let fileInfo = null;
     let receivedBlobs = [];
-    let receivedBuffer = [];
-    let receivedBufferSize = 0;
-    let receivedTotalSize = 0;
-
+    let receivedSize = 0;
+    let lastUpdateTime = 0;
+    
     channel.onmessage = async (event) => {
-        if (type === 'text') {
+        const data = event.data;
+        
+        // 1. 尝试解析元数据 (JSON String)
+        if (!fileInfo && typeof data === 'string') {
             try {
-                const msg = JSON.parse(event.data);
+                const msg = JSON.parse(data);
+                if (msg.type === 'file-info') {
+                    console.log('Received File Metadata:', msg);
+                    fileInfo = {
+                        name: msg.name,
+                        size: msg.size,
+                        type: msg.fileType
+                    };
+                    // 初始化 UI
+                    showProgressDialog(`正在接收 ${fileInfo.name}...`, 0);
+                    return;
+                } else if (msg.type === 'text') {
+                    // 兼容旧的文本消息格式
+                    // 直接处理，不需要后续的 binary 流程
+                    console.log('Received Text Message:', msg.content);
+                    const senderName = peers[senderId] ? peers[senderId].name : '未知用户';
+                    appendMessage(senderName, msg.content, 'in');
+                    showToast(`收到来自 ${senderName} 的消息`);
+                    
+                    // 自动回复 answer/ack? (文本通常不需要严格 ack)
+                    return;
+                }
+            } catch (e) {
+                console.warn('Failed to parse metadata:', e);
+            }
+        }
+        
+        // 2. 处理文件内容 (ArrayBuffer)
+        if (data instanceof ArrayBuffer) {
+            if (!fileInfo) {
+                console.warn('Received binary data before metadata! Ignoring or waiting...');
+                // 这里可能是一个问题：如果元数据丢了？
+                // 但 DataChannel 是有序可靠的 (Ordered, Reliable)，所以只要发了，肯定先到。
+                // 除非是对端没有发元数据 (旧版本代码)。
+                // 兼容性：如果收到了二进制但没元数据，可能是旧协议，或者 Text Chat 的误判？
+                // 暂时忽略，或者尝试从 pendingOffer 获取 (如果不复用的话)
+                if (pendingOffer && pendingOffer.fileInfo) {
+                    console.log('Fallback to pendingOffer fileInfo');
+                    fileInfo = pendingOffer.fileInfo;
+                    showProgressDialog(`正在接收 ${fileInfo.name}...`, 0);
+                } else {
+                    return; 
+                }
+            }
+            
+            receivedBlobs.push(data);
+            receivedSize += data.byteLength;
+            
+            // 更新进度条
+            const now = Date.now();
+            if (now - lastUpdateTime > 200 || receivedSize >= fileInfo.size) {
+                updateProgress(receivedSize, fileInfo.size);
+                lastUpdateTime = now;
+            }
+            
+            // 接收完成
+            if (receivedSize >= fileInfo.size) {
+                console.log('File receive complete:', fileInfo.name);
+                
+                // 保存文件
+                await saveFile(receivedBlobs, fileInfo);
+                setTimeout(() => hideDialog(progressDialog), 1000);
+                
+                // 发送确认信令
+                sendSignalingMessage(senderId, 'transfer-complete', {});
+
+                // 清理资源
+                setTimeout(() => {
+                    channel.close();
+                }, 1000);
+                
+                // 重置状态 (虽然 channel 会关闭，但闭包变量最好清理)
+                fileInfo = null;
+                receivedBlobs = [];
+                receivedSize = 0;
+            }
+        } else if (typeof data === 'string' && !fileInfo) {
+             // 可能是普通文本聊天
+             try {
+                const msg = JSON.parse(data);
                 if (msg.type === 'text') {
+                    const senderName = peers[senderId] ? peers[senderId].name : '未知用户';
+                    appendMessage(senderName, msg.content, 'in');
+                    showToast(`收到来自 ${senderName} 的消息`);
+                }
+             } catch(e) {}
+        }
+    };
+    
+    channel.onclose = () => {
+        console.log('Incoming DataChannel closed');
+    };
+    
+    channel.onerror = (err) => {
+        console.error('DataChannel error:', err);
+    };
+}
+
+// setupReceiverChannel 已被上面的通用函数替代，可以保留为空或者删除
+function setupReceiverChannel(channel, type, senderId, fileInfo) {
+    // Legacy support or specific logic if needed
+    // This function is kept to avoid ReferenceError if it's called from somewhere else,
+    // but the main logic is now in handleIncomingChannel.
+}
                     const senderName = peers[senderId]?.name || '未知用户';
                     document.getElementById('text-sender-name').textContent = senderName;
                     document.getElementById('text-content').innerText = msg.content;
