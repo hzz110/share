@@ -304,6 +304,7 @@ async function startConnection(peerId, type, data) {
     
     // 创建数据通道
     const channel = pc.createDataChannel('transfer');
+    channel.binaryType = 'arraybuffer';
     
     if (type === 'file') {
         setupSenderChannel(channel, type, data);
@@ -370,76 +371,55 @@ function setupSenderChannel(channel, type, data) {
     channel.onclose = () => console.log('Data channel closed');
 }
 
-function sendFileData(channel, file) {
-    const reader = new FileReader();
+async function sendFileData(channel, file) {
     let offset = 0;
-    
     document.getElementById('transfer-status').textContent = `正在发送 ${file.name}...`;
 
-    reader.onload = (e) => {
-        if (channel.readyState !== 'open') return;
-        
-        channel.send(e.target.result);
-        offset += e.target.result.byteLength;
-        
-        updateProgress(offset, file.size);
+    try {
+        while (offset < file.size) {
+            if (channel.readyState !== 'open') throw new Error('Connection closed');
 
-        if (offset < file.size) {
-            readSlice(offset);
-        } else {
-            console.log('File sent successfully');
-            setTimeout(() => hideDialog(progressDialog), 1000);
+            // 简单的背压控制：缓冲区 > 1MB 时暂停
+            if (channel.bufferedAmount > 1024 * 1024) {
+                await new Promise(resolve => {
+                    const check = () => {
+                        if (channel.bufferedAmount < 256 * 1024) { // 降到 256KB 再继续
+                            channel.onbufferedamountlow = null;
+                            resolve();
+                        }
+                    };
+                    channel.onbufferedamountlow = check;
+                    setTimeout(check, 50); // 轮询作为保底
+                });
+            }
+
+            const chunk = await readChunk(file, offset, CHUNK_SIZE);
+            channel.send(chunk);
+            offset += chunk.byteLength;
+            updateProgress(offset, file.size);
         }
-    };
 
-    const readSlice = (o) => {
-        const slice = file.slice(o, o + CHUNK_SIZE);
-        reader.readAsArrayBuffer(slice);
-    };
+        console.log('File sent successfully');
+        setTimeout(() => hideDialog(progressDialog), 1000);
 
-    // 处理背压：如果缓冲满了，暂停发送
-    channel.bufferedAmountLowThreshold = CHUNK_SIZE;
-    channel.onbufferedamountlow = () => {
-        // 继续读取发送逻辑已经在 reader.onload 里的递归调用实现
-        // 但这里实际上 FileReader 是异步的，可能不会阻塞。
-        // 对于大文件，我们需要更严格的控制。
-        // 简化版：我们依靠 FileReader 的读取速度，通常不会撑爆内存，但最好结合 bufferedAmount。
-    };
-
-    // 这里简单的递归读取可能会太快导致 buffer 溢出。
-    // 改进：使用 readSlice 配合 bufferedAmount 检查
-    
-    // 重新实现发送逻辑
-    sendChunk(channel, file, 0);
-}
-
-function sendChunk(channel, file, offset) {
-    if (channel.readyState !== 'open') return;
-    
-    // 简单的流控
-    if (channel.bufferedAmount > 16 * 1024 * 1024) { // 16MB 缓冲限制
-        setTimeout(() => sendChunk(channel, file, offset), 50);
-        return;
+    } catch (e) {
+        console.error('Send failed:', e);
+        alert('发送中断：' + e.message);
+        hideDialog(progressDialog);
     }
-
-    const slice = file.slice(offset, offset + CHUNK_SIZE);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        if (channel.readyState !== 'open') return;
-        channel.send(e.target.result);
-        const newOffset = offset + slice.size;
-        updateProgress(newOffset, file.size);
-        
-        if (newOffset < file.size) {
-            // 继续发送下一块，使用 setTimeout 避免调用栈过深，或者直接调用
-            // 如果使用 requestAnimationFrame 也可以
-            sendChunk(channel, file, newOffset);
-        } else {
-             setTimeout(() => hideDialog(progressDialog), 1000);
-        }
-    };
-    reader.readAsArrayBuffer(slice);
 }
+
+function readChunk(file, offset, length) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.onerror = reject;
+        const slice = file.slice(offset, offset + length);
+        reader.readAsArrayBuffer(slice);
+    });
+}
+
+/* 移除旧的 sendChunk 函数 */
 
 
 // --- 接收方逻辑 ---
@@ -495,6 +475,7 @@ async function acceptTransfer(offerMsg) {
     };
 
     pc.ondatachannel = (event) => {
+        event.channel.binaryType = 'arraybuffer';
         setupReceiverChannel(event.channel, offerMsg.transferType, offerMsg.sender);
     };
     
@@ -539,7 +520,7 @@ function setupReceiverChannel(channel, type, senderId) {
         } else {
             const data = event.data;
             receivedBuffers.push(data);
-            receivedSize += data.byteLength;
+            receivedSize += data.byteLength || data.size; // 兼容 ArrayBuffer 和 Blob
             
             updateProgress(receivedSize, incomingFileInfo.size);
             
