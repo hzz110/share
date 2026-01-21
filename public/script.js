@@ -752,11 +752,17 @@ let downloadDirectoryHandle = null; // 用于存储用户选择的下载目录�
 // 接收队列
 let receiveQueue = [];
 let isReceivingFile = false; // 是否正在接收文件
+let receivingFromId = null; // 当前正在接收的来源 ID
 
 async function handleOffer(msg) {
     // 检查是否正在接收文件（或发送文件，占用 activeConnection）
-    const isBusy = isReceivingFile || (activeConnection && activeConnection.role === 'sender' && isTransferring);
+    // 增加 receivingFromId 检查，确保不会因为 isReceivingFile 状态不一致而导致中断
+    const isBusy = isReceivingFile || 
+                   (receivingFromId && receivingFromId !== msg.sender) ||
+                   (activeConnection && activeConnection.role === 'sender' && isTransferring);
     
+    console.log(`Handle Offer from ${msg.sender}: isBusy=${isBusy}, receivingFrom=${receivingFromId}, isReceiving=${isReceivingFile}`);
+
     // 如果忙碌，且不是来自同一个发送者的（理论上复用时不会发 Offer，但如果是不同类型可能会发）
     // 这里简单处理：只要忙碌就加入队列，除非是文字消息（稍微特殊处理）
     
@@ -781,6 +787,7 @@ async function handleOffer(msg) {
     
     // 标记为正在接收
     isReceivingFile = true;
+    receivingFromId = msg.sender;
     
     // 自动接收，跳过确认弹窗
     console.log(`Auto accepting file from ${peers[msg.sender]?.name}`);
@@ -791,19 +798,16 @@ async function handleOffer(msg) {
 async function processReceiveQueue() {
     if (receiveQueue.length === 0) {
         isReceivingFile = false;
+        receivingFromId = null;
         return;
     }
     
     const nextMsg = receiveQueue.shift();
     console.log('Processing queued offer from', nextMsg.sender);
     
-    // 递归调用 handleOffer 处理下一个
-    // 注意：handleOffer 内部会再次检查状态，所以这里我们需要确保状态被正确重置
-    // 但 handleOffer 会设置 isReceivingFile = true
-    // 所以这里调用 handleOffer 是安全的，因为它会发现 isReceivingFile 已经是 false (我们刚重置的吗？不，我们传进去时要是 false)
-    
     // 这里直接重置一下状态确保 handleOffer 能通过
     isReceivingFile = false; 
+    receivingFromId = null; // 暂时清空，handleOffer 会重新设置
     await handleOffer(nextMsg);
 }
 
@@ -925,12 +929,23 @@ async function acceptTransfer(offerMsg) {
         (activeConnection.pc.connectionState === 'connected' || activeConnection.pc.connectionState === 'connecting') &&
         activeConnection.peerId === offerMsg.sender) {
         
-        console.log('Reusing existing PeerConnection');
+        console.log('Reusing existing PeerConnection for sender:', offerMsg.sender);
         pc = activeConnection.pc;
-        // 复用连接时，不需要重新绑定 ondatachannel，因为我们使用了持久化的通用处理函数
-        // 如果之前的逻辑是覆盖 ondatachannel，现在应该停止这样做
-        // pc.ondatachannel = ... // REMOVED
+        // 确保角色正确
+        activeConnection.role = 'receiver';
+        
     } else {
+        // 安全检查：如果当前已经连接了其他人，且正在接收，不要覆盖！
+        if (activeConnection && activeConnection.peerId !== offerMsg.sender && 
+            (activeConnection.pc.connectionState === 'connected' || activeConnection.pc.connectionState === 'connecting')) {
+             if (receivingFromId && receivingFromId !== offerMsg.sender) {
+                 console.error(`CRITICAL: Attempting to overwrite active connection from ${activeConnection.peerId} with ${offerMsg.sender}`);
+                 // 尝试放入队列（虽然 handleOffer 应该拦截了）
+                 receiveQueue.push(offerMsg);
+                 return;
+             }
+        }
+
         console.log('Creating new PeerConnection');
         pc = new RTCPeerConnection(rtcConfig);
         activeConnection = { pc, role: 'receiver', peerId: offerMsg.sender };
