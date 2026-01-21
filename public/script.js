@@ -18,7 +18,7 @@ function generateUUID() {
 let peers = {}; // 存储在线用户列表
 let activeConnection = null; // 当前活跃的连接对象 { pc, channel, ... }
 let pendingCandidates = []; // 暂存未建立连接时的 ICE Candidates
-const CHUNK_SIZE = 64 * 1024; // 增加到 64KB 以减少系统开销
+const CHUNK_SIZE = 16 * 1024; // 16KB 是 WebRTC 最优推荐值
 
 const peersContainer = document.getElementById('peers-container');
 const myNameEl = document.getElementById('my-name');
@@ -380,17 +380,21 @@ async function sendFileData(channel, file) {
         while (offset < file.size) {
             if (channel.readyState !== 'open') throw new Error('Connection closed');
 
-            // 简单的背压控制：缓冲区 > 1MB 时暂停
-            if (channel.bufferedAmount > 1024 * 1024) {
+            // 动态背压控制：缓冲区上限 16MB，下限 1MB
+            if (channel.bufferedAmount > 16 * 1024 * 1024) {
                 await new Promise(resolve => {
                     const check = () => {
-                        if (channel.bufferedAmount < 256 * 1024) { // 降到 256KB 再继续
+                        if (channel.bufferedAmount < 1 * 1024 * 1024) { 
                             channel.onbufferedamountlow = null;
                             resolve();
                         }
                     };
                     channel.onbufferedamountlow = check;
-                    setTimeout(check, 50); // 轮询作为保底
+                    // 只有在不支持 onbufferedamountlow 的浏览器才需要轮询，现代浏览器很少需要
+                    // 但为了稳妥，保留一个较长的轮询
+                    setTimeout(() => {
+                        if (channel.onbufferedamountlow) check();
+                    }, 100);
                 });
             }
 
@@ -399,10 +403,7 @@ async function sendFileData(channel, file) {
             offset += chunk.byteLength;
             updateProgress(offset, file.size);
             
-            // 强制给手机端喘息时间，避免 IO 拥塞
-            if (offset % (CHUNK_SIZE * 5) === 0) {
-                 await new Promise(r => setTimeout(r, 10));
-            }
+            // 移除人为延迟，全速发送
         }
 
         console.log('File sent successfully');
