@@ -1,11 +1,19 @@
 // 使用公共 MQTT Broker
-const MQTT_BROKER = 'wss://broker.hivemq.com:8000/mqtt';
+const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
 const TOPIC_PREFIX = 'localdrop/v1';
 
 let mqttClient = null;
-let myId = uuidv4(); // 使用 uuid 库生成唯一 ID
+let myId = generateUUID();
 let myIp = null;
 let myName = generateRandomName();
+
+// 简单的 UUID 生成器
+function generateUUID() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
 
 let peers = {}; // 存储在线用户列表
 let activeConnection = null; // 当前活跃的连接对象 { pc, channel, ... }
@@ -223,7 +231,11 @@ function renderPeers() {
 // WebRTC 配置
 const rtcConfig = {
     iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' }
     ]
 };
 
