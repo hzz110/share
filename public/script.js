@@ -322,7 +322,12 @@ function renderPeers() {
         
         const icon = document.createElement('div');
         icon.className = 'device-icon peer';
-        icon.textContent = user.name.substring(0, 2);
+        // 根据是否是本机设置显示文本
+        if (user.name === myName) {
+            icon.textContent = '本机';
+        } else {
+            icon.textContent = '对方';
+        }
         // 设置唯一颜色边框，便于区分
         icon.style.borderColor = getDeviceColor(user.name);
         
@@ -394,6 +399,35 @@ function initiateTextChat(peerId) {
     selectedPeerId = peerId;
     showDialog(sendTextDialog);
     textInput.focus();
+}
+
+function appendMessage(senderName, content, type) {
+    const contentEl = document.getElementById('text-content');
+    
+    // 如果是第一条消息，或者之前的消息被清空了，可能需要重置？
+    // 这里我们简单地追加
+    
+    const msgDiv = document.createElement('div');
+    msgDiv.style.marginBottom = '8px';
+    msgDiv.style.padding = '8px';
+    msgDiv.style.borderRadius = '4px';
+    msgDiv.style.wordBreak = 'break-word';
+    
+    if (type === 'in') {
+        msgDiv.style.backgroundColor = '#444';
+        msgDiv.innerHTML = `<strong style="color: #aaa; font-size: 0.8em;">${senderName}:</strong><br>${content}`;
+    } else {
+        msgDiv.style.backgroundColor = '#1e3a29';
+        msgDiv.style.textAlign = 'right';
+        msgDiv.innerHTML = `<strong style="color: #4caf50; font-size: 0.8em;">我:</strong><br>${content}`;
+    }
+    
+    contentEl.appendChild(msgDiv);
+    contentEl.scrollTop = contentEl.scrollHeight;
+    
+    if (type === 'in') {
+        showDialog(receiveTextDialog);
+    }
 }
 
 // 队列处理函数
