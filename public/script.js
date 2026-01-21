@@ -47,14 +47,22 @@ async function initApp() {
             myIp = data.ip;
         } catch (e) {
             console.warn('ipify failed, trying fallback...');
-            const res = await fetch('https://api.db-ip.com/v2/free/self');
-            const data = await res.json();
-            myIp = data.ipAddress;
+            try {
+                const res = await fetch('https://api.db-ip.com/v2/free/self');
+                const data = await res.json();
+                myIp = data.ipAddress;
+            } catch (e2) {
+                // 增加国内友好 API 备选
+                console.warn('db-ip failed, trying ifconfig.me...');
+                const res = await fetch('https://ifconfig.me/ip');
+                myIp = await res.text();
+            }
         }
 
         if (!myIp) throw new Error('无法获取公网 IP');
 
         console.log('My IP:', myIp);
+        document.getElementById('network-id').textContent = `网络 ID: ${myIp}`;
         myNameEl.textContent = `${myName} (在线)`;
 
         // 2. 连接 MQTT
@@ -63,18 +71,22 @@ async function initApp() {
     } catch (e) {
         console.error('Init failed:', e);
         myNameEl.textContent = '初始化失败，请刷新重试';
+        document.getElementById('network-id').textContent = '获取 ID 失败';
         alert('无法初始化连接，请检查网络或关闭广告拦截插件。');
     }
 }
 
 function connectMqtt() {
     const clientId = 'localdrop_' + Math.random().toString(16).substr(2, 8);
+    document.getElementById('connection-status').textContent = '🟡 连接服务器...';
+    
     mqttClient = mqtt.connect(MQTT_BROKER, {
         clientId: clientId
     });
 
     mqttClient.on('connect', () => {
         console.log('Connected to MQTT Broker');
+        document.getElementById('connection-status').textContent = '🟢 服务已连接';
         
         // 订阅房间广播
         mqttClient.subscribe(`${TOPIC_PREFIX}/${myIp}/broadcast`);
@@ -89,6 +101,15 @@ function connectMqtt() {
         
         // 清理离线用户 (每 10 秒)
         setInterval(prunePeers, 10000);
+    });
+    
+    mqttClient.on('error', (err) => {
+        console.error('MQTT Error:', err);
+        document.getElementById('connection-status').textContent = '🔴 服务错误';
+    });
+
+    mqttClient.on('offline', () => {
+        document.getElementById('connection-status').textContent = '⚪ 服务断开';
     });
 
     mqttClient.on('message', (topic, message) => {
