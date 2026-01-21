@@ -16,7 +16,8 @@ function generateUUID() {
 }
 
 let peers = {}; // 存储在线用户列表
-let activeConnection = null; // 当前活跃的连接对象 { pc, channel, ... }
+let connections = {}; // 存储所有的 PeerConnections (Key: peerId, Value: { pc, ... })
+let activeConnection = null; // 指向当前 UI 聚焦或最近使用的连接 (Legacy & UI Helper)
 let pendingCandidates = {}; // 暂存未建立连接时的 ICE Candidates (Key: peerId, Value: array)
 
 // 检测是否为移动设备
@@ -552,6 +553,9 @@ async function startConnection(peerId, type, data, resolve, reject) {
         setupSenderChannel(channel, type, data, resolve, reject, peerId);
         activeConnection = { pc, channel, text: data, role: 'sender', peerId: peerId };
     }
+    
+    // Update connections map
+    connections[peerId] = activeConnection;
 
     // 无论是否复用，都发送 Offer 告知对方有新文件/消息
     // 如果是复用，createOffer 会生成一个新的 Offer (包含新 DataChannel 的信息，如果有变化)
@@ -588,57 +592,68 @@ function setupSenderChannel(channel, type, data, resolve, reject, peerId) {
                  batchTotal: data.batchTotal
              };
              channel.send(JSON.stringify(meta));
+
+             console.log('Metadata sent, waiting for ACK...');
+             
+             const handleMessage = (event) => {
+                 try {
+                     const msg = JSON.parse(event.data);
+                     if (msg.type === 'ack-transfer') {
+                         console.log('Received ACK, starting transfer...');
+                         channel.removeEventListener('message', handleMessage);
+                         
+                         sendFileData(channel, data).then(() => {
+                            // 发送数据完成，等待接收端确认（通过信令或关闭通道）
+                            console.log('Data sent, waiting for receiver confirmation...');
+                            
+                            let completed = false;
+                            const cleanup = () => {
+                                if (completed) return;
+                                completed = true;
+                                if (peers[peerId]) peers[peerId].resolveTransfer = null;
+                                channel.onclose = () => console.log('Data channel closed after completion');
+                                if (resolve) resolve();
+                            };
+            
+                            // 1. 设置 10秒 超时（避免死锁）
+                            const timeout = setTimeout(() => {
+                                console.warn('Transfer confirmation timeout, proceeding anyway...');
+                                cleanup();
+                            }, 10000);
+            
+                            // 2. 监听信令 (推荐，准确)
+                            if (peers[peerId]) {
+                                peers[peerId].resolveTransfer = () => {
+                                    console.log('Received transfer-complete signal from receiver');
+                                    clearTimeout(timeout);
+                                    cleanup();
+                                };
+                            }
+            
+                            // 3. 监听通道关闭 (兼容旧逻辑)
+                            channel.onclose = () => {
+                                console.log('Data channel closed by receiver');
+                                clearTimeout(timeout);
+                                cleanup();
+                            };
+                        }).catch(err => {
+                            if (reject) reject(err);
+                        });
+                     }
+                 } catch (e) {}
+             };
+             
+             channel.addEventListener('message', handleMessage);
+
         } else {
              // 文字聊天也可以发送个 meta，或者直接发内容
              // 之前的逻辑是直接发内容 { type: 'text', content: ... }
              // 保持不变，接收端根据 type 判断
-        }
-
-        if (type === 'file') {
-            sendFileData(channel, data).then(() => {
-                // 发送数据完成，等待接收端确认（通过信令或关闭通道）
-                console.log('Data sent, waiting for receiver confirmation...');
-                
-                let completed = false;
-                const cleanup = () => {
-                    if (completed) return;
-                    completed = true;
-                    if (peers[peerId]) peers[peerId].resolveTransfer = null;
-                    channel.onclose = () => console.log('Data channel closed after completion');
-                    if (resolve) resolve();
-                };
-
-                // 1. 设置 10秒 超时（避免死锁）
-                const timeout = setTimeout(() => {
-                    console.warn('Transfer confirmation timeout, proceeding anyway...');
-                    cleanup();
-                }, 10000);
-
-                // 2. 监听信令 (推荐，准确)
-                if (peers[peerId]) {
-                    peers[peerId].resolveTransfer = () => {
-                        console.log('Received transfer-complete signal from receiver');
-                        clearTimeout(timeout);
-                        cleanup();
-                    };
-                }
-
-                // 3. 监听通道关闭 (兼容旧逻辑)
-                channel.onclose = () => {
-                    console.log('Data channel closed by receiver');
-                    clearTimeout(timeout);
-                    cleanup();
-                };
-            }).catch(err => {
-                if (reject) reject(err);
-            });
-        } else {
-            // 发送文字
-            channel.send(JSON.stringify({ type: 'text', content: data }));
-            // 发送完可以关闭
-            setTimeout(() => {
-                if (resolve) resolve();
-            }, 1000);
+             channel.send(JSON.stringify({ type: 'text', content: data }));
+             // 发送完可以关闭
+             setTimeout(() => {
+                 if (resolve) resolve();
+             }, 1000);
         }
     };
     channel.onclose = () => console.log('Data channel closed');
@@ -755,42 +770,25 @@ let isReceivingFile = false; // 是否正在接收文件
 let receivingFromId = null; // 当前正在接收的来源 ID
 
 async function handleOffer(msg) {
-    // 检查是否正在接收文件（或发送文件，占用 activeConnection）
-    // 增加 receivingFromId 检查，确保不会因为 isReceivingFile 状态不一致而导致中断
-    const isBusy = isReceivingFile || 
-                   (receivingFromId && receivingFromId !== msg.sender) ||
-                   (activeConnection && activeConnection.role === 'sender' && isTransferring);
-    
-    console.log(`Handle Offer from ${msg.sender}: isBusy=${isBusy}, receivingFrom=${receivingFromId}, isReceiving=${isReceivingFile}`);
+    console.log(`Handle Offer from ${msg.sender}`);
 
-    // 如果忙碌，且不是来自同一个发送者的（理论上复用时不会发 Offer，但如果是不同类型可能会发）
-    // 这里简单处理：只要忙碌就加入队列，除非是文字消息（稍微特殊处理）
+    // 不再检查 busy 状态，总是建立连接以维持网络拓扑
+    // 真正的文件传输排队逻辑已移至 handleIncomingChannel (基于 DataChannel 协议)
     
-    if (isBusy) {
-        // 如果是文字消息，且当前不是正在传输大文件占用 bandwidth，也许可以插队？
-        // 但为了安全，统一入队
-        console.log('Receiver is busy, queuing offer from', msg.sender);
-        receiveQueue.push(msg);
-        showToast(`当前正忙，已将 ${peers[msg.sender]?.name || '未知用户'} 的请求加入队列...`);
-        return;
-    }
-
     if (msg.transferType === 'text') {
-        // 文字聊天自动接收
+        // 文字聊天
         await acceptTransfer(msg);
         return;
     }
 
     pendingOffer = msg;
-    if (pendingCandidates[msg.sender]) pendingCandidates[msg.sender] = []; // 清空之前的候选
-    // incomingFileInfo = msg.fileInfo; // 不再使用全局变量
+    if (pendingCandidates[msg.sender]) pendingCandidates[msg.sender] = []; 
     
-    // 标记为正在接收
+    // 标记为正在接收 (legacy logic, keep for safety but rely on receivingFromId for queue)
     isReceivingFile = true;
-    receivingFromId = msg.sender;
     
-    // 自动接收，跳过确认弹窗
-    console.log(`Auto accepting file from ${peers[msg.sender]?.name}`);
+    // 自动接收，建立连接
+    console.log(`Auto accepting connection from ${peers[msg.sender]?.name}`);
     await acceptTransfer(msg);
 }
 
@@ -802,13 +800,17 @@ async function processReceiveQueue() {
         return;
     }
     
-    const nextMsg = receiveQueue.shift();
-    console.log('Processing queued offer from', nextMsg.sender);
+    const item = receiveQueue.shift();
+    console.log('Processing queued transfer from', item.senderId);
     
-    // 这里直接重置一下状态确保 handleOffer 能通过
-    isReceivingFile = false; 
-    receivingFromId = null; // 暂时清空，handleOffer 会重新设置
-    await handleOffer(nextMsg);
+    if (item.resolve) {
+        // 唤醒挂起的 handleIncomingChannel
+        item.resolve();
+    } else {
+        // 兼容旧逻辑 (虽然理论上不会走到这里了)
+        console.warn('Unknown queue item:', item);
+        processReceiveQueue(); // Skip
+    }
 }
 
 // 移除手动接收的事件绑定，保留拒绝按钮逻辑以防万一
@@ -884,28 +886,43 @@ downloadDirBtn.onmouseout = () => {
 
 downloadDirBtn.onclick = async () => {
     try {
-        // 如果已经有句柄（比如从 DB 恢复的），只需要验证权限
-        if (downloadDirectoryHandle) {
-             const hasPermission = await verifyPermission(downloadDirectoryHandle, true);
+        let handleToUse = downloadDirectoryHandle;
+        let isChangeRequest = false;
+
+        // 1. 如果当前已启用（绿色状态），询问是否更改
+        if (handleToUse && downloadDirBtn.textContent.includes('已启用')) {
+            if (confirm('是否更改保存文件夹？\n点击“确定”选择新文件夹，点击“取消”保持不变。')) {
+                isChangeRequest = true;
+                handleToUse = null; // 标记为需要新句柄
+            } else {
+                return; // 用户取消
+            }
+        }
+
+        // 2. 如果有句柄且不是更改请求（即“恢复权限”场景），尝试验证
+        if (handleToUse && !isChangeRequest) {
+             const hasPermission = await verifyPermission(handleToUse, true);
              if (hasPermission) {
-                 await saveDirectoryHandleToDB(downloadDirectoryHandle); // 刷新 DB
+                 await saveDirectoryHandleToDB(handleToUse); // 刷新 DB
                  updateDownloadBtnState('active');
                  alert('自动保存权限已恢复！');
                  return;
              }
+             // 如果验证失败（用户拒绝），继续向下执行，允许重新选择
         }
 
-        // 否则重新请求
-        downloadDirectoryHandle = await window.showDirectoryPicker({
+        // 3. 请求新文件夹（如果是更改请求，或没有句柄，或验证失败）
+        const newHandle = await window.showDirectoryPicker({
             mode: 'readwrite'
         });
         
-        const hasPermission = await verifyPermission(downloadDirectoryHandle, true);
+        const hasPermission = await verifyPermission(newHandle, true);
         if (!hasPermission) {
             throw new Error('未获得写入权限');
         }
 
         // 保存到 DB
+        downloadDirectoryHandle = newHandle;
         await saveDirectoryHandleToDB(downloadDirectoryHandle);
 
         updateDownloadBtnState('active');
@@ -924,32 +941,27 @@ document.getElementById('my-info').appendChild(downloadDirBtn);
 
 async function acceptTransfer(offerMsg) {
     let pc;
-    // 检查是否已有活跃连接且对方是同一个人
-    if (activeConnection && activeConnection.pc && 
-        (activeConnection.pc.connectionState === 'connected' || activeConnection.pc.connectionState === 'connecting') &&
-        activeConnection.peerId === offerMsg.sender) {
+    const senderId = offerMsg.sender;
+
+    // Check existing connection in connections map
+    if (connections[senderId] && connections[senderId].pc && 
+        (connections[senderId].pc.connectionState === 'connected' || connections[senderId].pc.connectionState === 'connecting')) {
         
-        console.log('Reusing existing PeerConnection for sender:', offerMsg.sender);
-        pc = activeConnection.pc;
-        // 确保角色正确
-        activeConnection.role = 'receiver';
+        console.log('Reusing existing PeerConnection for sender:', senderId);
+        pc = connections[senderId].pc;
+        connections[senderId].role = 'receiver';
+        
+        // Update activeConnection for legacy support
+        activeConnection = connections[senderId];
         
     } else {
-        // 安全检查：如果当前已经连接了其他人，且正在接收，不要覆盖！
-        if (activeConnection && activeConnection.peerId !== offerMsg.sender && 
-            (activeConnection.pc.connectionState === 'connected' || activeConnection.pc.connectionState === 'connecting')) {
-             if (receivingFromId && receivingFromId !== offerMsg.sender) {
-                 console.error(`CRITICAL: Attempting to overwrite active connection from ${activeConnection.peerId} with ${offerMsg.sender}`);
-                 // 尝试放入队列（虽然 handleOffer 应该拦截了）
-                 receiveQueue.push(offerMsg);
-                 return;
-             }
-        }
-
-        console.log('Creating new PeerConnection');
+        console.log('Creating new PeerConnection for:', senderId);
         pc = new RTCPeerConnection(rtcConfig);
-        activeConnection = { pc, role: 'receiver', peerId: offerMsg.sender };
         
+        // Store in map
+        connections[senderId] = { pc, role: 'receiver', peerId: senderId };
+        activeConnection = connections[senderId];
+
         pc.oniceconnectionstatechange = () => {
             console.log('ICE state:', pc.iceConnectionState);
             if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
@@ -962,12 +974,12 @@ async function acceptTransfer(offerMsg) {
         // 绑定持久化的通用处理函数
         pc.ondatachannel = (event) => {
             console.log('DataChannel received', event.channel.label);
-            handleIncomingChannel(event.channel, offerMsg.sender);
+            handleIncomingChannel(event.channel, senderId);
         };
         
         pc.onicecandidate = (event) => {
             if (event.candidate) {
-                sendSignalingMessage(offerMsg.sender, 'candidate', {
+                sendSignalingMessage(senderId, 'candidate', {
                     candidate: event.candidate
                 });
             }
@@ -1032,6 +1044,23 @@ function handleIncomingChannel(channel, senderId) {
                 const msg = JSON.parse(data);
                 if (msg.type === 'file-info') {
                     console.log('Received File Metadata:', msg);
+                    
+                    // 检查是否正忙 (基于 receivingFromId)
+                    if (receivingFromId && receivingFromId !== senderId) {
+                         console.log(`Receiver is busy (receiving from ${receivingFromId}), queuing transfer from ${senderId}`);
+                         showToast(`当前正忙，已将 ${peers[senderId]?.name || '未知用户'} 的传输请求加入队列`);
+                         
+                         // 挂起 execution，直到 processReceiveQueue 调用 resolve
+                         await new Promise(resolve => {
+                             receiveQueue.push({ senderId, resolve });
+                         });
+                         
+                         console.log(`Resuming transfer from ${senderId}`);
+                    }
+
+                    // 开始接收
+                    receivingFromId = senderId;
+                    
                     fileInfo = {
                         name: msg.name,
                         size: msg.size,
@@ -1039,6 +1068,10 @@ function handleIncomingChannel(channel, senderId) {
                         batchIndex: msg.batchIndex,
                         batchTotal: msg.batchTotal
                     };
+                    
+                    // 发送 ACK 确认
+                    channel.send(JSON.stringify({ type: 'ack-transfer' }));
+
                     // 初始化 UI
                     const indexStr = (fileInfo.batchIndex && fileInfo.batchTotal) ? ` (${fileInfo.batchIndex}/${fileInfo.batchTotal})` : '';
                     showProgressDialog(`正在接收 ${fileInfo.name}${indexStr}...`, 0);
@@ -1204,21 +1237,36 @@ async function saveFile(blobs, fileInfo) {
 // --- 通用 WebRTC 处理 ---
 
 async function handleAnswer(msg) {
-    if (activeConnection && activeConnection.pc) {
+    // Check if we have a connection for this sender
+    const conn = connections[msg.sender];
+    if (conn && conn.pc) {
+        await conn.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+    } else if (activeConnection && activeConnection.pc && activeConnection.peerId === msg.sender) {
+        // Fallback to activeConnection (legacy/sender side)
         await activeConnection.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+    } else {
+        console.warn('Received answer for unknown connection:', msg.sender);
     }
 }
 
 async function handleCandidate(msg) {
-    // 检查是否是当前活跃连接的 Candidate
-    if (activeConnection && activeConnection.pc && activeConnection.peerId === msg.sender) {
+    // Check connection in map first
+    const conn = connections[msg.sender];
+    if (conn && conn.pc) {
+        try {
+            await conn.pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+        } catch (e) {
+            console.error('Error adding received ice candidate (Map)', e);
+        }
+    } else if (activeConnection && activeConnection.pc && activeConnection.peerId === msg.sender) {
+        // Fallback to activeConnection
         try {
             await activeConnection.pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
         } catch (e) {
-            console.error('Error adding received ice candidate', e);
+            console.error('Error adding received ice candidate (Active)', e);
         }
     } else {
-        // 如果连接还没建立，或者不是当前活跃连接（可能是排队中的连接），暂存起来
+        // Buffer if connection not ready
         console.log(`Buffering ICE candidate from ${msg.sender}`);
         if (!pendingCandidates[msg.sender]) pendingCandidates[msg.sender] = [];
         pendingCandidates[msg.sender].push(msg.candidate);
