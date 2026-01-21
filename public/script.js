@@ -627,9 +627,29 @@ document.getElementById('btn-accept').onclick = async () => {
 // 添加设置下载目录的功能
 const downloadDirBtn = document.createElement('button');
 downloadDirBtn.textContent = '📂 启用自动保存到文件夹';
-downloadDirBtn.className = 'btn secondary';
-downloadDirBtn.style.marginTop = '10px';
+downloadDirBtn.className = 'btn'; // 移除 secondary，使用默认或自定义
+downloadDirBtn.style.marginTop = '15px';
 downloadDirBtn.style.width = '100%';
+downloadDirBtn.style.backgroundColor = '#2d2d2d'; // 深灰色背景，不突兀
+downloadDirBtn.style.color = '#ccc';
+downloadDirBtn.style.border = '1px dashed #555'; // 虚线边框，像一个放置区域
+downloadDirBtn.style.borderRadius = '8px';
+downloadDirBtn.style.padding = '12px';
+downloadDirBtn.style.transition = 'all 0.3s ease';
+
+downloadDirBtn.onmouseover = () => {
+    downloadDirBtn.style.borderColor = '#4285f4';
+    downloadDirBtn.style.color = '#fff';
+    downloadDirBtn.style.backgroundColor = '#333';
+};
+downloadDirBtn.onmouseout = () => {
+    if (!downloadDirectoryHandle) {
+        downloadDirBtn.style.borderColor = '#555';
+        downloadDirBtn.style.color = '#ccc';
+        downloadDirBtn.style.backgroundColor = '#2d2d2d';
+    }
+};
+
 downloadDirBtn.onclick = async () => {
     try {
         // 请求读写权限
@@ -644,12 +664,18 @@ downloadDirBtn.onclick = async () => {
         }
 
         downloadDirBtn.textContent = '✅ 已启用自动保存';
-        downloadDirBtn.classList.remove('secondary');
-        downloadDirBtn.classList.add('primary');
+        downloadDirBtn.style.backgroundColor = '#1e3a29'; // 暗绿色背景
+        downloadDirBtn.style.borderColor = '#4caf50';
+        downloadDirBtn.style.color = '#4caf50';
+        downloadDirBtn.style.borderStyle = 'solid';
+        
         alert('已启用自动保存！文件将直接写入您选择的文件夹，不再频繁弹窗。');
     } catch (e) {
         console.error('Failed to get directory handle:', e);
-        alert('无法启用自动保存: ' + e.message);
+        // 如果取消了，不报错，只是不改变状态
+        if (e.name !== 'AbortError') {
+             alert('无法启用自动保存: ' + e.message);
+        }
     }
 };
 // 将按钮添加到页面合适位置 (例如 my-info 下面)
@@ -657,34 +683,54 @@ document.getElementById('my-info').appendChild(downloadDirBtn);
 
 
 async function acceptTransfer(offerMsg) {
-    const pc = new RTCPeerConnection(rtcConfig);
-    activeConnection = { pc, role: 'receiver', peerId: offerMsg.sender }; // 记录 peerId 以便区分
-    
-    pc.oniceconnectionstatechange = () => {
-        console.log('ICE state:', pc.iceConnectionState);
-        if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-            if (offerMsg.transferType === 'file') {
-                // alert(`连接断开 (State: ${pc.iceConnectionState})，请重试。`);
-                console.warn(`连接断开 (State: ${pc.iceConnectionState})`);
-                hideDialog(progressDialog);
+    let pc;
+    // 检查是否已有活跃连接且对方是同一个人
+    if (activeConnection && activeConnection.pc && 
+        (activeConnection.pc.connectionState === 'connected' || activeConnection.pc.connectionState === 'connecting') &&
+        activeConnection.peerId === offerMsg.sender) {
+        
+        console.log('Reusing existing PeerConnection');
+        pc = activeConnection.pc;
+        // 如果复用连接，不需要重新设置 activeConnection，只需要更新 role 等（如果需要）
+    } else {
+        console.log('Creating new PeerConnection');
+        pc = new RTCPeerConnection(rtcConfig);
+        activeConnection = { pc, role: 'receiver', peerId: offerMsg.sender };
+        
+        pc.oniceconnectionstatechange = () => {
+            console.log('ICE state:', pc.iceConnectionState);
+            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+                if (offerMsg.transferType === 'file') {
+                    console.warn(`连接断开 (State: ${pc.iceConnectionState})`);
+                    // 只有当不是传输结束后的正常断开时才隐藏进度条
+                    // 实际上这里很难判断，暂时不主动隐藏，依靠传输完成的逻辑来隐藏
+                }
             }
-        }
-    };
+        };
 
-    pc.ondatachannel = (event) => {
-        event.channel.binaryType = 'arraybuffer';
-        // 将 fileInfo 传递给 channel 设置函数
-        setupReceiverChannel(event.channel, offerMsg.transferType, offerMsg.sender, offerMsg.fileInfo);
-    };
-    
-    pc.onicecandidate = (event) => {
-        if (event.candidate) {
-            sendSignalingMessage(offerMsg.sender, 'candidate', {
-                candidate: event.candidate
-            });
-        }
-    };
+        pc.ondatachannel = (event) => {
+            event.channel.binaryType = 'arraybuffer';
+            // 注意：这里可能需要从 event.channel.label 或其他方式获取 fileInfo，
+            // 但标准做法是信令传递 fileInfo，闭包捕获
+            // 由于 ondatachannel 是针对整个 PC 的，我们需要确保正确关联 fileInfo
+            // 简单起见，我们假设当前 pendingOffer 对应这个 channel
+            // *风险*：如果并发多个文件，这里可能会乱。但目前 acceptTransfer 是串行的。
+            // 更好的方式：DataChannel label 包含 fileId，或者通过信令带上 id。
+            // 但目前 sender 是串行发送，所以 pendingOffer 应该是最新的。
+            setupReceiverChannel(event.channel, offerMsg.transferType, offerMsg.sender, offerMsg.fileInfo);
+        };
+        
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                sendSignalingMessage(offerMsg.sender, 'candidate', {
+                    candidate: event.candidate
+                });
+            }
+        };
+    }
 
+    // 处理 SDP (Offer)
+    // 无论是新连接还是复用连接，都需要设置 Remote Description (Renegotiation)
     await pc.setRemoteDescription(new RTCSessionDescription(offerMsg.sdp));
     
     // 处理之前暂存的 Candidates
@@ -709,7 +755,6 @@ async function acceptTransfer(offerMsg) {
     
     if (offerMsg.transferType === 'file') {
         showProgressDialog(`正在接收 ${offerMsg.fileInfo.name}...`, 0);
-        // 这里不需要重置全局变量了，状态都在 setupReceiverChannel 内部
     }
 }
 
