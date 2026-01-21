@@ -21,10 +21,14 @@ let pendingCandidates = []; // 暂存未建立连接时的 ICE Candidates
 
 // 检测是否为移动设备
 const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-// 极限提速：使用 64KB 分块，减少 JS 调用次数
-const CHUNK_SIZE = 64 * 1024; 
+// 极限提速：使用 128KB 分块
+const CHUNK_SIZE = 128 * 1024; 
 
 const peersContainer = document.getElementById('peers-container');
+
+// 传输队列
+let transferQueue = [];
+let isTransferring = false;
 
 // 生成设备唯一颜色 (Hash string to color)
 function getDeviceColor(name) {
@@ -381,24 +385,50 @@ function initiateTextChat(peerId) {
     textInput.focus();
 }
 
-fileInput.onchange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+// 队列处理函数
+async function processQueue() {
+    if (isTransferring || transferQueue.length === 0) return;
     
-    startSendingFile(selectedPeerId, file);
+    isTransferring = true;
+    const { peerId, file } = transferQueue.shift();
+    
+    try {
+        await startSendingFile(peerId, file);
+    } catch (e) {
+        console.error('Transfer failed in queue', e);
+    } finally {
+        isTransferring = false;
+        // 稍微延迟处理下一个，确保连接清理完成
+        setTimeout(processQueue, 500); 
+    }
+}
+
+fileInput.onchange = (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    
+    files.forEach(file => {
+        transferQueue.push({ peerId: selectedPeerId, file });
+    });
+    
+    processQueue();
     // 重置 input 以便下次可以选择相同文件
     fileInput.value = '';
 };
 
 async function startSendingFile(peerId, file) {
-    await startConnection(peerId, 'file', file);
+    return new Promise((resolve, reject) => {
+        startConnection(peerId, 'file', file, resolve, reject).catch(reject);
+    });
 }
 
 async function startSendingText(peerId, text) {
-    await startConnection(peerId, 'text', text);
+    return new Promise((resolve, reject) => {
+        startConnection(peerId, 'text', text, resolve, reject).catch(reject);
+    });
 }
 
-async function startConnection(peerId, type, data) {
+async function startConnection(peerId, type, data, resolve, reject) {
     console.log(`Starting ${type} transfer to ${peerId}`);
     const pc = new RTCPeerConnection(rtcConfig);
     
@@ -407,10 +437,10 @@ async function startConnection(peerId, type, data) {
     channel.binaryType = 'arraybuffer';
     
     if (type === 'file') {
-        setupSenderChannel(channel, type, data);
+        setupSenderChannel(channel, type, data, resolve, reject);
         activeConnection = { pc, channel, file: data, role: 'sender' };
     } else {
-        setupSenderChannel(channel, type, data);
+        setupSenderChannel(channel, type, data, resolve, reject);
         activeConnection = { pc, channel, text: data, role: 'sender' };
     }
 
@@ -421,6 +451,7 @@ async function startConnection(peerId, type, data) {
             if (type === 'file') {
                 alert(`连接断开 (State: ${pc.iceConnectionState})，请重试。如果频繁失败，请尝试刷新页面。`);
                 hideDialog(progressDialog);
+                if (reject) reject(new Error('ICE connection failed'));
             }
         }
     };
@@ -453,11 +484,15 @@ async function startConnection(peerId, type, data) {
     sendSignalingMessage(peerId, 'offer', offerMsg);
 }
 
-function setupSenderChannel(channel, type, data) {
+function setupSenderChannel(channel, type, data, resolve, reject) {
     channel.onopen = () => {
         console.log('Data channel open');
         if (type === 'file') {
-            sendFileData(channel, data);
+            sendFileData(channel, data).then(() => {
+                if (resolve) resolve();
+            }).catch(err => {
+                if (reject) reject(err);
+            });
         } else {
             // 发送文字
             channel.send(JSON.stringify({ type: 'text', content: data }));
@@ -465,6 +500,7 @@ function setupSenderChannel(channel, type, data) {
             setTimeout(() => {
                 // channel.close(); 
                 // pc.close(); // 可以关闭连接
+                if (resolve) resolve();
             }, 1000);
         }
     };
@@ -481,12 +517,12 @@ async function sendFileData(channel, file) {
         while (offset < file.size) {
             if (channel.readyState !== 'open') throw new Error('Connection closed');
 
-            // 动态背压控制：放宽缓冲区限制
-            // 缓冲区 > 256KB 时暂停，降到 64KB 以下恢复
-            if (channel.bufferedAmount > 256 * 1024) {
+            // 动态背压控制：放宽缓冲区限制至 1MB
+            // 缓冲区 > 1MB 时暂停，降到 256KB 以下恢复
+            if (channel.bufferedAmount > 1024 * 1024) {
                 await new Promise(resolve => {
                     const check = () => {
-                        if (channel.bufferedAmount < 64 * 1024) { 
+                        if (channel.bufferedAmount < 256 * 1024) { 
                             channel.onbufferedamountlow = null;
                             resolve();
                         }
