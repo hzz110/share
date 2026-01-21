@@ -1,0 +1,184 @@
+:root {
+    --bg-color: #121212;
+    --card-bg: #1e1e1e;
+    --text-color: #e0e0e0;
+    --accent-color: #4285f4;
+    --secondary-color: #f44336;
+    --hover-color: #2c2c2c;
+}
+
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 40px;
+}
+
+#my-info {
+    margin-top: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.device-icon {
+    width: 60px;
+    height: 60px;
+    background-color: var(--accent-color);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 14px;
+    margin-bottom: 10px;
+    color: white;
+}
+
+.device-icon.peer {
+    background-color: var(--card-bg);
+    border: 2px solid var(--accent-color);
+    cursor: pointer;
+    transition: transform 0.2s;
+    width: 80px;
+    height: 80px;
+}
+
+.device-icon.peer:hover {
+    transform: scale(1.1);
+    background-color: var(--hover-color);
+}
+
+.peers-grid {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 40px;
+    min-height: 200px;
+    align-items: center;
+}
+
+.peer-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    cursor: pointer;
+}
+
+.peer-name {
+    margin-top: 10px;
+    font-weight: 500;
+}
+
+.scanning-pulse {
+    color: #666;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 0.5; }
+    50% { opacity: 1; }
+    100% { opacity: 0.5; }
+}
+
+/* Dialogs */
+.dialog {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.hidden {
+    display: none;
+}
+
+.dialog-content {
+    background-color: var(--card-bg);
+    padding: 30px;
+    border-radius: 12px;
+    text-align: center;
+    max-width: 90%;
+    width: 400px;
+}
+
+.dialog-actions {
+    display: flex;
+    justify-content: space-around;
+    margin-top: 20px;
+}
+
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: bold;
+    font-size: 16px;
+}
+
+.btn.primary {
+    background-color: var(--accent-color);
+    color: white;
+}
+
+.btn.secondary {
+    background-color: var(--secondary-color);
+    color: white;
+}
+
+.file-name {
+    font-family: monospace;
+    background: #333;
+    padding: 5px;
+    border-radius: 4px;
+    word-break: break-all;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 10px;
+    background-color: #333;
+    border-radius: 5px;
+    margin: 15px 0;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background-color: var(--accent-color);
+    width: 0%;
+    transition: width 0.1s;
+}
+
+footer {
+    text-align: center;
+    color: #666;
+    margin-top: auto;
+    font-size: 0.8rem;
+}

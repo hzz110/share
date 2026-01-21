@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>局域网快传</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <!-- 引入 uuid 库 -->
+    <script src="https://unpkg.com/uuid@latest/dist/umd/uuidv4.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>局域网快传</h1>
+            <div id="my-info">
+                <div class="device-icon me">你</div>
+                <p id="my-name">连接中...</p>
+            </div>
+        </header>
+
+        <main>
+            <div id="peers-container" class="peers-grid">
+                <!-- Peers will be added here dynamically -->
+                <div class="scanning-pulse">正在扫描设备...</div>
+            </div>
+        </main>
+
+        <footer>
+            <p>发现同一局域网下的设备</p>
+        </footer>
+    </div>
+
+    <!-- Hidden file input -->
+    <input type="file" id="file-input" style="display: none;" multiple>
+
+    <!-- Dialogs -->
+    <div id="receive-dialog" class="dialog hidden">
+        <div class="dialog-content">
+            <h3>文件传输请求</h3>
+            <p><span id="sender-name">未知用户</span> 想要发送给你:</p>
+            <p id="file-name" class="file-name">example.txt</p>
+            <p id="file-size" class="file-size">1.2 MB</p>
+            <div class="dialog-actions">
+                <button id="btn-reject" class="btn secondary">拒绝</button>
+                <button id="btn-accept" class="btn primary">接收</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="progress-dialog" class="dialog hidden">
+        <div class="dialog-content">
+            <h3 id="transfer-status">传输中...</h3>
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <p id="progress-text">0%</p>
+        </div>
+    </div>
+
+    <!-- Text Chat Dialogs -->
+    <div id="send-text-dialog" class="dialog hidden">
+        <div class="dialog-content">
+            <h3>发送消息</h3>
+            <textarea id="text-input" placeholder="在此输入消息..." rows="5" style="width: 100%; margin: 10px 0; padding: 8px; box-sizing: border-box; resize: vertical;"></textarea>
+            <div class="dialog-actions">
+                <button id="btn-cancel-text" class="btn secondary">取消</button>
+                <button id="btn-send-text" class="btn primary">发送</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="receive-text-dialog" class="dialog hidden">
+        <div class="dialog-content">
+            <h3>收到消息</h3>
+            <p>来自 <span id="text-sender-name">未知用户</span>:</p>
+            <div id="text-content" style="background: #333; padding: 15px; border-radius: 8px; text-align: left; margin: 10px 0; white-space: pre-wrap; max-height: 200px; overflow-y: auto;"></div>
+            <div class="dialog-actions">
+                <button id="btn-close-text" class="btn primary">关闭</button>
+                <button id="btn-copy-text" class="btn secondary">复制</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
