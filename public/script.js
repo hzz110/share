@@ -17,7 +17,7 @@ function generateUUID() {
 
 let peers = {}; // 存储在线用户列表
 let activeConnection = null; // 当前活跃的连接对象 { pc, channel, ... }
-let pendingCandidates = []; // 暂存未建立连接时的 ICE Candidates
+let pendingCandidates = {}; // 暂存未建立连接时的 ICE Candidates (Key: peerId, Value: array)
 
 // 检测是否为移动设备
 const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -401,7 +401,23 @@ function initiateTextChat(peerId) {
     textInput.focus();
 }
 
+let lastMessage = { content: null, time: 0, sender: null };
+
 function appendMessage(senderName, content, type) {
+    // 简单的去重逻辑 (防止同一条消息显示两次)
+    const now = Date.now();
+    if (type === 'in' && 
+        lastMessage.content === content && 
+        lastMessage.sender === senderName && 
+        now - lastMessage.time < 2000) {
+        console.log('Duplicate message ignored:', content);
+        return;
+    }
+    
+    if (type === 'in') {
+        lastMessage = { content, time: now, sender: senderName };
+    }
+
     const contentEl = document.getElementById('text-content');
     
     // 如果是第一条消息，或者之前的消息被清空了，可能需要重置？
@@ -760,7 +776,7 @@ async function handleOffer(msg) {
     }
 
     pendingOffer = msg;
-    pendingCandidates = []; // 清空之前的候选
+    if (pendingCandidates[msg.sender]) pendingCandidates[msg.sender] = []; // 清空之前的候选
     // incomingFileInfo = msg.fileInfo; // 不再使用全局变量
     
     // 标记为正在接收
@@ -957,16 +973,17 @@ async function acceptTransfer(offerMsg) {
     await pc.setRemoteDescription(new RTCSessionDescription(offerMsg.sdp));
     
     // 处理之前暂存的 Candidates
-    if (pendingCandidates.length > 0) {
-        console.log(`Adding ${pendingCandidates.length} pending candidates`);
-        for (const candidate of pendingCandidates) {
+    const candidates = pendingCandidates[offerMsg.sender];
+    if (candidates && candidates.length > 0) {
+        console.log(`Adding ${candidates.length} pending candidates from ${offerMsg.sender}`);
+        for (const candidate of candidates) {
             try {
                 await pc.addIceCandidate(new RTCIceCandidate(candidate));
             } catch (e) {
                 console.error('Error adding pending ice candidate', e);
             }
         }
-        pendingCandidates = [];
+        delete pendingCandidates[offerMsg.sender];
     }
 
     const answer = await pc.createAnswer();
@@ -1081,16 +1098,6 @@ function handleIncomingChannel(channel, senderId) {
                     processReceiveQueue();
                 }, 1500); // 稍微延迟，确保UI和清理完成
             }
-        } else if (typeof data === 'string' && !fileInfo) {
-             // 可能是普通文本聊天
-             try {
-                const msg = JSON.parse(data);
-                if (msg.type === 'text') {
-                    const senderName = peers[senderId] ? peers[senderId].name : '未知用户';
-                    appendMessage(senderName, msg.content, 'in');
-                    showToast(`收到来自 ${senderName} 的消息`);
-                }
-             } catch(e) {}
         }
     };
     
@@ -1188,16 +1195,18 @@ async function handleAnswer(msg) {
 }
 
 async function handleCandidate(msg) {
-    if (activeConnection && activeConnection.pc) {
+    // 检查是否是当前活跃连接的 Candidate
+    if (activeConnection && activeConnection.pc && activeConnection.peerId === msg.sender) {
         try {
             await activeConnection.pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
         } catch (e) {
             console.error('Error adding received ice candidate', e);
         }
     } else {
-        // 如果连接还没建立（比如正在等待用户点击接收），暂存起来
-        console.log('Buffering ICE candidate');
-        pendingCandidates.push(msg.candidate);
+        // 如果连接还没建立，或者不是当前活跃连接（可能是排队中的连接），暂存起来
+        console.log(`Buffering ICE candidate from ${msg.sender}`);
+        if (!pendingCandidates[msg.sender]) pendingCandidates[msg.sender] = [];
+        pendingCandidates[msg.sender].push(msg.candidate);
     }
 }
 
