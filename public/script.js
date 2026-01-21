@@ -796,7 +796,8 @@ async function handleOffer(msg) {
 async function processReceiveQueue() {
     if (receiveQueue.length === 0) {
         isReceivingFile = false;
-        receivingFromId = null;
+        // Do NOT clear receivingFromId here unconditionally.
+        // It should be cleared by the transfer completion logic.
         return;
     }
     
@@ -1142,9 +1143,14 @@ function handleIncomingChannel(channel, senderId) {
                 receivedSize = 0;
 
                 // 检查是否有排队的接收任务
-                setTimeout(() => {
-                    processReceiveQueue();
-                }, 1500); // 稍微延迟，确保UI和清理完成
+    setTimeout(() => {
+        // 仅当当前接收者是自己时，才释放锁
+        if (receivingFromId === senderId) {
+            console.log('Releasing receiver lock from', senderId);
+            receivingFromId = null;
+        }
+        processReceiveQueue();
+    }, 1500); // 稍微延迟，确保UI和清理完成
             }
         }
     };
