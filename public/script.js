@@ -21,8 +21,8 @@ let pendingCandidates = []; // 暂存未建立连接时的 ICE Candidates
 
 // 检测是否为移动设备
 const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-// 移动端使用更小的分块 (8KB) 以减少主线程阻塞，PC 端使用标准 (16KB)
-const CHUNK_SIZE = isMobile ? 8 * 1024 : 16 * 1024; 
+// 统一使用 32KB 分块，平衡速度与稳定性
+const CHUNK_SIZE = 32 * 1024; 
 
 const peersContainer = document.getElementById('peers-container');
 const myNameEl = document.getElementById('my-name');
@@ -485,12 +485,12 @@ async function sendFileData(channel, file) {
                 });
             }
 
-            // 移动端强制 CPU 让渡：每发送 5 个块强制休息一下
-            // 增加休息时间到 10ms，确保浏览器有足够时间处理 GC 和网络心跳
+            // 移动端强制 CPU 让渡：大幅降低频率，每发送约 1MB (32 chunks * 32KB) 才休息一次
+            // 既保证了心跳包发送，又避免了频繁 await 导致的性能损耗
             if (isMobile) {
                 loopCount++;
-                if (loopCount % 5 === 0) {
-                    await new Promise(r => setTimeout(r, 10)); 
+                if (loopCount % 32 === 0) {
+                    await new Promise(r => setTimeout(r, 0)); // 仅让出时间片，不强制睡眠太久
                 }
             }
 
@@ -551,14 +551,12 @@ async function handleOffer(msg) {
     pendingCandidates = []; // 清空之前的候选
     incomingFileInfo = msg.fileInfo;
     
-    const senderName = peers[msg.sender]?.name || '未知用户';
-    document.getElementById('sender-name').textContent = senderName;
-    document.getElementById('file-name').textContent = incomingFileInfo.name;
-    document.getElementById('file-size').textContent = formatBytes(incomingFileInfo.size);
-    
-    showDialog(receiveDialog);
+    // 自动接收，跳过确认弹窗
+    console.log(`Auto accepting file from ${peers[msg.sender]?.name}`);
+    await acceptTransfer(msg);
 }
 
+// 移除手动接收的事件绑定，保留拒绝按钮逻辑以防万一（虽然界面上不再主动显示）
 document.getElementById('btn-reject').onclick = () => {
     hideDialog(receiveDialog);
     pendingOffer = null;
