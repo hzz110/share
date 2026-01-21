@@ -72,9 +72,9 @@ body {
 
 .device-icon.peer {
     background-color: var(--card-bg);
-    border: 2px solid var(--accent-color);
+    border: 2px solid #555; /* 改为灰色边框，区别于自己的蓝色 */
     cursor: pointer;
-    transition: transform 0.2s;
+    transition: transform 0.2s, border-color 0.2s;
     width: 80px;
     height: 80px;
 }
@@ -82,6 +82,7 @@ body {
 .device-icon.peer:hover {
     transform: scale(1.1);
     background-color: var(--hover-color);
+    border-color: #777;
 }
 
 .peers-grid {

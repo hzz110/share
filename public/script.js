@@ -485,12 +485,12 @@ async function sendFileData(channel, file) {
                 });
             }
 
-            // 移动端强制 CPU 让渡：每发送 10 个块强制休息一下
-            // 手机浏览器主线程非常容易被密集循环占满，导致 WebSocket/ICE 心跳丢失从而断开连接
+            // 移动端强制 CPU 让渡：每发送 5 个块强制休息一下
+            // 增加休息时间到 10ms，确保浏览器有足够时间处理 GC 和网络心跳
             if (isMobile) {
                 loopCount++;
-                if (loopCount % 10 === 0) {
-                    await new Promise(r => setTimeout(r, 2)); // 暂停 2ms 让出主线程
+                if (loopCount % 5 === 0) {
+                    await new Promise(r => setTimeout(r, 10)); 
                 }
             }
 
