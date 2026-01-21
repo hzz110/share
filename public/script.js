@@ -28,6 +28,25 @@ const progressDialog = document.getElementById('progress-dialog');
 
 // 初始化
 myNameEl.textContent = myName;
+
+// 添加手动修改网络 ID 的功能
+document.getElementById('network-id').style.cursor = 'pointer';
+document.getElementById('network-id').title = '点击修改网络 ID';
+document.getElementById('network-id').onclick = () => {
+    const newId = prompt('请输入新的网络 ID (确保两台设备一致):', myIp || '');
+    if (newId && newId.trim() !== '') {
+        myIp = newId.trim();
+        document.getElementById('network-id').textContent = `网络 ID: ${myIp}`;
+        // 重新连接 MQTT
+        if (mqttClient) {
+            mqttClient.end();
+            connectMqtt();
+        } else {
+            connectMqtt();
+        }
+    }
+};
+
 initApp();
 
 // 生成随机中文名称
@@ -37,29 +56,60 @@ function generateRandomName() {
     return `${adjectives[Math.floor(Math.random() * adjectives.length)]}${animals[Math.floor(Math.random() * animals.length)]}`;
 }
 
+async function getPublicIP() {
+    const services = [
+        { url: 'https://www.cloudflare.com/cdn-cgi/trace', type: 'trace' },
+        { url: 'https://api.ipify.org?format=json', type: 'json', field: 'ip' },
+        { url: 'https://api.db-ip.com/v2/free/self', type: 'json', field: 'ipAddress' },
+        { url: 'https://ifconfig.me/ip', type: 'text' }
+    ];
+
+    for (const service of services) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
+            
+            const res = await fetch(service.url, { signal: controller.signal });
+            clearTimeout(timeoutId);
+            
+            if (!res.ok) continue;
+
+            if (service.type === 'json') {
+                const data = await res.json();
+                return data[service.field];
+            } else if (service.type === 'text') {
+                return await res.text();
+            } else if (service.type === 'trace') {
+                const text = await res.text();
+                const lines = text.split('\n');
+                const ipLine = lines.find(l => l.startsWith('ip='));
+                if (ipLine) return ipLine.split('=')[1];
+            }
+        } catch (e) {
+            console.warn(`${service.url} failed:`, e);
+        }
+    }
+    return null;
+}
+
 async function initApp() {
     try {
         // 1. 获取公网 IP (作为房间号)
-        // 使用多个 API 备选，防止某个挂掉
-        try {
-            const res = await fetch('https://api.ipify.org?format=json');
-            const data = await res.json();
-            myIp = data.ip;
-        } catch (e) {
-            console.warn('ipify failed, trying fallback...');
-            try {
-                const res = await fetch('https://api.db-ip.com/v2/free/self');
-                const data = await res.json();
-                myIp = data.ipAddress;
-            } catch (e2) {
-                // 增加国内友好 API 备选
-                console.warn('db-ip failed, trying ifconfig.me...');
-                const res = await fetch('https://ifconfig.me/ip');
-                myIp = await res.text();
+        myIp = await getPublicIP();
+
+        if (!myIp) {
+            console.warn('无法自动获取公网 IP');
+            document.getElementById('network-id').textContent = '点击设置网络 ID';
+            // 随机生成一个 ID 作为备用
+            myIp = Math.floor(Math.random() * 10000).toString();
+            if(confirm('无法获取公网IP，是否使用随机网络ID: ' + myIp + '？\n(请确保另一台设备也修改为相同的ID)')) {
+                 document.getElementById('network-id').textContent = `网络 ID: ${myIp}`;
+            } else {
+                 document.getElementById('network-id').textContent = '点击设置网络 ID';
+                 myIp = null; // 暂停连接
+                 return;
             }
         }
-
-        if (!myIp) throw new Error('无法获取公网 IP');
 
         console.log('My IP:', myIp);
         document.getElementById('network-id').textContent = `网络 ID: ${myIp}`;
@@ -72,7 +122,6 @@ async function initApp() {
         console.error('Init failed:', e);
         myNameEl.textContent = '初始化失败，请刷新重试';
         document.getElementById('network-id').textContent = '获取 ID 失败';
-        alert('无法初始化连接，请检查网络或关闭广告拦截插件。');
     }
 }
 
