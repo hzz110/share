@@ -17,7 +17,7 @@ function generateUUID() {
 
 let peers = {}; // 存储在线用户列表
 let activeConnection = null; // 当前活跃的连接对象 { pc, channel, ... }
-const CHUNK_SIZE = 16384; // 16KB
+const CHUNK_SIZE = 8192; // 降至 8KB 以提高移动端兼容性
 
 const peersContainer = document.getElementById('peers-container');
 const myNameEl = document.getElementById('my-name');
@@ -319,7 +319,7 @@ async function startConnection(peerId, type, data) {
         if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
             // 文字发送很快，通常不需要报错，除非一直在 connecting
             if (type === 'file') {
-                alert('连接丢失或失败。');
+                alert(`连接断开 (State: ${pc.iceConnectionState})，请重试。如果频繁失败，请尝试刷新页面。`);
                 hideDialog(progressDialog);
             }
         }
@@ -397,6 +397,11 @@ async function sendFileData(channel, file) {
             channel.send(chunk);
             offset += chunk.byteLength;
             updateProgress(offset, file.size);
+            
+            // 强制给手机端喘息时间，避免 IO 拥塞
+            if (offset % (CHUNK_SIZE * 5) === 0) {
+                 await new Promise(r => setTimeout(r, 10));
+            }
         }
 
         console.log('File sent successfully');
@@ -414,8 +419,10 @@ function readChunk(file, offset, length) {
         const reader = new FileReader();
         reader.onload = e => resolve(e.target.result);
         reader.onerror = reject;
-        const slice = file.slice(offset, offset + length);
-        reader.readAsArrayBuffer(slice);
+        const blob = file.slice ? file.slice(offset, offset + length) : 
+                    (file.webkitSlice ? file.webkitSlice(offset, offset + length) : 
+                    file.mozSlice(offset, offset + length));
+        reader.readAsArrayBuffer(blob);
     });
 }
 
@@ -468,7 +475,7 @@ async function acceptTransfer(offerMsg) {
         console.log('ICE state:', pc.iceConnectionState);
         if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
             if (offerMsg.transferType === 'file') {
-                alert('连接丢失或失败。');
+                alert(`连接断开 (State: ${pc.iceConnectionState})，请重试。`);
                 hideDialog(progressDialog);
             }
         }
