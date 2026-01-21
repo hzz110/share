@@ -17,6 +17,7 @@ function generateUUID() {
 
 let peers = {}; // 存储在线用户列表
 let activeConnection = null; // 当前活跃的连接对象 { pc, channel, ... }
+let pendingCandidates = []; // 暂存未建立连接时的 ICE Candidates
 const CHUNK_SIZE = 8192; // 降至 8KB 以提高移动端兼容性
 
 const peersContainer = document.getElementById('peers-container');
@@ -444,6 +445,7 @@ async function handleOffer(msg) {
     }
 
     pendingOffer = msg;
+    pendingCandidates = []; // 清空之前的候选
     incomingFileInfo = msg.fileInfo;
     
     const senderName = peers[msg.sender]?.name || '未知用户';
@@ -495,6 +497,20 @@ async function acceptTransfer(offerMsg) {
     };
 
     await pc.setRemoteDescription(new RTCSessionDescription(offerMsg.sdp));
+    
+    // 处理之前暂存的 Candidates
+    if (pendingCandidates.length > 0) {
+        console.log(`Adding ${pendingCandidates.length} pending candidates`);
+        for (const candidate of pendingCandidates) {
+            try {
+                await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (e) {
+                console.error('Error adding pending ice candidate', e);
+            }
+        }
+        pendingCandidates = [];
+    }
+
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     
@@ -567,6 +583,10 @@ async function handleCandidate(msg) {
         } catch (e) {
             console.error('Error adding received ice candidate', e);
         }
+    } else {
+        // 如果连接还没建立（比如正在等待用户点击接收），暂存起来
+        console.log('Buffering ICE candidate');
+        pendingCandidates.push(msg.candidate);
     }
 }
 
