@@ -1012,62 +1012,7 @@ function setupReceiverChannel(channel, type, senderId, fileInfo) {
     // This function is kept to avoid ReferenceError if it's called from somewhere else,
     // but the main logic is now in handleIncomingChannel.
 }
-                    const senderName = peers[senderId]?.name || '未知用户';
-                    document.getElementById('text-sender-name').textContent = senderName;
-                    document.getElementById('text-content').innerText = msg.content;
-                    showDialog(receiveTextDialog);
-                }
-            } catch (e) {
-                console.error('Failed to parse text message', e);
-            }
-        } else {
-            const data = event.data;
-            const chunkSize = data.byteLength || data.size;
-            
-            receivedBuffer.push(data);
-            receivedBufferSize += chunkSize;
-            receivedTotalSize += chunkSize;
-            
-            // 每 10MB 合并一次 Blob
-            if (receivedBufferSize > 10 * 1024 * 1024) {
-                receivedBlobs.push(new Blob(receivedBuffer));
-                receivedBuffer = [];
-                receivedBufferSize = 0;
-            }
-            
-            // 节流更新接收进度
-            const now = Date.now();
-            if (now - lastReceiverUpdateTime > 200 || receivedTotalSize >= fileInfo.size) {
-                updateProgress(receivedTotalSize, fileInfo.size);
-                lastReceiverUpdateTime = now;
-            }
-            
-            if (receivedTotalSize >= fileInfo.size) {
-                // 确保最后更新一次 100%
-                updateProgress(receivedTotalSize, fileInfo.size);
-                
-                // 合并剩余数据
-                if (receivedBuffer.length > 0) {
-                    receivedBlobs.push(new Blob(receivedBuffer));
-                    receivedBuffer = [];
-                    receivedBufferSize = 0;
-                }
-                
-                await saveFile(receivedBlobs, fileInfo);
-                setTimeout(() => hideDialog(progressDialog), 1000);
-                
-                // 发送确认信令，通知发送端可以继续下一个文件
-                sendSignalingMessage(senderId, 'transfer-complete', {});
 
-                // 传输完成后关闭连接，释放资源
-                setTimeout(() => {
-                    channel.close();
-                    // pc.close(); // 保持 PC 连接可能导致后续复用问题，暂时不主动关闭 PC，依靠 ICE 状态管理
-                }, 1000);
-            }
-        }
-    };
-}
 
 // 验证并请求权限
 async function verifyPermission(fileHandle, readWrite) {
