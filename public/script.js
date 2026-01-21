@@ -36,8 +36,12 @@ function getDeviceColor(name) {
     for (let i = 0; i < name.length; i++) {
         hash = name.charCodeAt(i) + ((hash << 5) - hash);
     }
-    const c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
-    return '#' + '00000'.substring(0, 6 - c.length) + c;
+    // 使用 HSL 颜色空间，并避开蓝色系 (200-260)，因为蓝色是“我”的颜色
+    let h = Math.abs(hash) % 360;
+    if (h > 200 && h < 260) {
+        h = (h + 60) % 360;
+    }
+    return `hsl(${h}, 75%, 60%)`;
 }
 const myNameEl = document.getElementById('my-name');
 const fileInput = document.getElementById('file-input');
@@ -628,14 +632,24 @@ downloadDirBtn.style.marginTop = '10px';
 downloadDirBtn.style.width = '100%';
 downloadDirBtn.onclick = async () => {
     try {
-        downloadDirectoryHandle = await window.showDirectoryPicker();
+        // 请求读写权限
+        downloadDirectoryHandle = await window.showDirectoryPicker({
+            mode: 'readwrite'
+        });
+        
+        // 立即验证权限 (确保在用户点击时获得授权)
+        const hasPermission = await verifyPermission(downloadDirectoryHandle, true);
+        if (!hasPermission) {
+            throw new Error('未获得写入权限');
+        }
+
         downloadDirBtn.textContent = '✅ 已启用自动保存';
         downloadDirBtn.classList.remove('secondary');
         downloadDirBtn.classList.add('primary');
         alert('已启用自动保存！文件将直接写入您选择的文件夹，不再频繁弹窗。');
     } catch (e) {
         console.error('Failed to get directory handle:', e);
-        alert('无法启用自动保存 (可能是浏览器不支持或用户取消)');
+        alert('无法启用自动保存: ' + e.message);
     }
 };
 // 将按钮添加到页面合适位置 (例如 my-info 下面)
@@ -768,22 +782,58 @@ function setupReceiverChannel(channel, type, senderId, fileInfo) {
     };
 }
 
+// 验证并请求权限
+async function verifyPermission(fileHandle, readWrite) {
+    const options = {};
+    if (readWrite) {
+        options.mode = 'readwrite';
+    }
+    try {
+        // Check if permission was already granted. If so, return true.
+        if ((await fileHandle.queryPermission(options)) === 'granted') {
+            return true;
+        }
+        // Request permission. If the user grants permission, return true.
+        if ((await fileHandle.requestPermission(options)) === 'granted') {
+            return true;
+        }
+    } catch (e) {
+        console.error('Permission check failed:', e);
+    }
+    // The user did not grant permission, so return false.
+    return false;
+}
+
 async function saveFile(blobs, fileInfo) {
     const blob = new Blob(blobs, { type: fileInfo.type });
 
     // 优先使用 File System Access API (如果用户启用了)
     if (downloadDirectoryHandle) {
         try {
+            // 1. 净化文件名 (防止非法字符导致 API 报错)
+            // Windows 不允许: < > : " / \ | ? *
+            const safeName = fileInfo.name.replace(/[<>:"/\\|?*]/g, '_');
+            
+            // 2. 检查并请求权限
+            const hasPermission = await verifyPermission(downloadDirectoryHandle, true);
+            if (!hasPermission) {
+                throw new Error('用户拒绝了目录写入权限');
+            }
+
             // 获取文件句柄 (create: true 表示创建新文件)
-            const fileHandle = await downloadDirectoryHandle.getFileHandle(fileInfo.name, { create: true });
+            const fileHandle = await downloadDirectoryHandle.getFileHandle(safeName, { create: true });
             const writable = await fileHandle.createWritable();
             await writable.write(blob);
             await writable.close();
-            console.log(`File saved to folder: ${fileInfo.name}`);
+            console.log(`File saved to folder: ${safeName}`);
             return;
         } catch (e) {
             console.error('Auto-save failed, falling back to download:', e);
-            // 如果自动保存失败（例如权限问题），回退到普通下载
+            // 提示用户自动保存失败，并说明原因
+            alert(`自动保存失败 (${e.message})，将转为手动保存。`);
+            
+            // 如果是因为句柄失效（例如刷新页面后），可能需要重置句柄
+            // 但为了不打扰用户，这里暂时不重置，只是回退
         }
     }
 
