@@ -18,7 +18,7 @@ function generateUUID() {
 let peers = {}; // 存储在线用户列表
 let activeConnection = null; // 当前活跃的连接对象 { pc, channel, ... }
 let pendingCandidates = []; // 暂存未建立连接时的 ICE Candidates
-const CHUNK_SIZE = 8192; // 降至 8KB 以提高移动端兼容性
+const CHUNK_SIZE = 64 * 1024; // 增加到 64KB 以减少系统开销
 
 const peersContainer = document.getElementById('peers-container');
 const myNameEl = document.getElementById('my-name');
@@ -433,8 +433,10 @@ function readChunk(file, offset, length) {
 // --- 接收方逻辑 ---
 
 let pendingOffer = null;
-let receivedBuffers = [];
-let receivedSize = 0;
+let receivedBlobs = []; // 存储已合并的大块 Blob
+let receivedBuffer = []; // 暂存当前的小块 ArrayBuffer
+let receivedBufferSize = 0; // 当前暂存区大小
+let receivedTotalSize = 0; // 总接收大小
 let incomingFileInfo = null;
 
 async function handleOffer(msg) {
@@ -520,8 +522,11 @@ async function acceptTransfer(offerMsg) {
     
     if (offerMsg.transferType === 'file') {
         showProgressDialog(`正在接收 ${offerMsg.fileInfo.name}...`, 0);
-        receivedBuffers = [];
-        receivedSize = 0;
+        // 重置接收缓冲区
+        receivedBlobs = [];
+        receivedBuffer = [];
+        receivedBufferSize = 0;
+        receivedTotalSize = 0;
         incomingFileInfo = offerMsg.fileInfo;
     }
 }
@@ -542,12 +547,28 @@ function setupReceiverChannel(channel, type, senderId) {
             }
         } else {
             const data = event.data;
-            receivedBuffers.push(data);
-            receivedSize += data.byteLength || data.size; // 兼容 ArrayBuffer 和 Blob
+            const chunkSize = data.byteLength || data.size;
             
-            updateProgress(receivedSize, incomingFileInfo.size);
+            receivedBuffer.push(data);
+            receivedBufferSize += chunkSize;
+            receivedTotalSize += chunkSize;
             
-            if (receivedSize >= incomingFileInfo.size) {
+            // 每 10MB 合并一次 Blob，避免 ArrayBuffer 数组过大导致内存溢出
+            if (receivedBufferSize > 10 * 1024 * 1024) {
+                receivedBlobs.push(new Blob(receivedBuffer));
+                receivedBuffer = [];
+                receivedBufferSize = 0;
+            }
+            
+            updateProgress(receivedTotalSize, incomingFileInfo.size);
+            
+            if (receivedTotalSize >= incomingFileInfo.size) {
+                // 合并剩余数据
+                if (receivedBuffer.length > 0) {
+                    receivedBlobs.push(new Blob(receivedBuffer));
+                    receivedBuffer = [];
+                    receivedBufferSize = 0;
+                }
                 saveFile();
                 setTimeout(() => hideDialog(progressDialog), 1000);
             }
@@ -556,7 +577,7 @@ function setupReceiverChannel(channel, type, senderId) {
 }
 
 function saveFile() {
-    const blob = new Blob(receivedBuffers, { type: incomingFileInfo.type });
+    const blob = new Blob(receivedBlobs, { type: incomingFileInfo.type });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -564,8 +585,10 @@ function saveFile() {
     a.click();
     
     // 清理
-    setTimeout(() => URL.revokeObjectURL(url), 100);
-    receivedBuffers = [];
+    setTimeout(() => {
+        URL.revokeObjectURL(url);
+        receivedBlobs = []; // 释放内存
+    }, 100);
 }
 
 // --- 通用 WebRTC 处理 ---
