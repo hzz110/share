@@ -59,7 +59,7 @@ document.getElementById('network-id').onclick = () => {
     const newId = prompt('请输入新的网络 ID (确保两台设备一致):', myIp || '');
     if (newId && newId.trim() !== '') {
         myIp = newId.trim();
-        document.getElementById('network-id').textContent = `网络 ID: ${myIp}`;
+        document.getElementById('network-id').textContent = myIp;
         // 重新连接 MQTT
         if (mqttClient) {
             mqttClient.end();
@@ -135,13 +135,13 @@ async function initApp() {
 
         if (!myIp) {
             console.warn('无法自动获取公网 IP');
-            document.getElementById('network-id').textContent = '点击设置网络 ID';
+            document.getElementById('network-id').textContent = '点击设置 ID';
             // 随机生成一个 ID 作为备用
             myIp = Math.floor(Math.random() * 10000).toString();
             if(confirm('无法获取公网IP，是否使用随机网络ID: ' + myIp + '？\n(请确保另一台设备也修改为相同的ID)')) {
-                 document.getElementById('network-id').textContent = `网络 ID: ${myIp}`;
+                 document.getElementById('network-id').textContent = myIp;
             } else {
-                 document.getElementById('network-id').textContent = '点击设置网络 ID';
+                 document.getElementById('network-id').textContent = '点击设置 ID';
                  myIp = null; // 暂停连接
                  return;
             }
@@ -157,7 +157,7 @@ async function initApp() {
     } catch (e) {
         console.error('Init failed:', e);
         myNameEl.textContent = '初始化失败，请刷新重试';
-        document.getElementById('network-id').textContent = '获取 ID 失败';
+        document.getElementById('network-id').textContent = '获取失败';
     }
 }
 
@@ -925,19 +925,23 @@ function updateDownloadBtnState(state) {
         
         downloadDirBtn.textContent = '修改';
         downloadDirBtn.classList.remove('text-amber-500', 'hover:text-amber-400');
-        downloadDirBtn.classList.add('tgree到n-500', 'hover:text-green-400');
+        downloadDirBtn.classList.add('text-green-500', 'hover:text-green-400');
     } else if (state === 'pending') {
-        downloadDirText.textContent = `点击恢复自动保存: "${folderName}"`;
+        downloadDirText.textContent = `点击恢复保存到: "${folderName}"`;
         downloadDirText.classList.add('text-amber-200/70');
         downloadDirText.classList.remove('text-green-400');
         
         downloadDirBtn.textContent = '恢复';
+        downloadDirBtn.classList.add('text-amber-500');
+        downloadDirBtn.classList.remove('text-green-500');
     } else {
-        downloadDirText.textContent = `自动保存: (未启用)`;
+        downloadDirText.textContent = `自动保存到: 默认下载目录`;
         downloadDirText.classList.add('text-amber-200/70');
         downloadDirText.classList.remove('text-green-400');
         
-        downloadDirBtn.textContent = '启用';
+        downloadDirBtn.textContent = '修改';
+        downloadDirBtn.classList.add('text-amber-500', 'hover:text-amber-400');
+        downloadDirBtn.classList.remove('text-green-500', 'hover:text-green-400');
     }
 }
 
