@@ -148,8 +148,8 @@ async function initApp() {
         }
 
         console.log('My IP:', myIp);
-        document.getElementById('network-id').textContent = `网络 ID: ${myIp}`;
-        myNameEl.textContent = `${myName} (在线)`;
+        document.getElementById('network-id').textContent = myIp;
+        myNameEl.innerHTML = `${myName} <span class="text-blue-400">(在线)</span>`;
 
         // 2. 连接 MQTT
         connectMqtt();
@@ -161,9 +161,33 @@ async function initApp() {
     }
 }
 
+function updateConnectionStatus(status) {
+    const statusText = document.getElementById('connection-status');
+    const indicator = document.getElementById('connection-indicator');
+    
+    if (!statusText || !indicator) return;
+
+    // Reset indicator classes but keep base ones
+    indicator.className = 'w-2 h-2 rounded-full pulse-animation';
+    
+    if (status === 'connected') {
+        statusText.textContent = '服务已连接';
+        indicator.classList.add('bg-green-500');
+    } else if (status === 'connecting') {
+        statusText.textContent = '连接服务器...';
+        indicator.classList.add('bg-yellow-500');
+    } else if (status === 'error') {
+        statusText.textContent = '服务错误';
+        indicator.classList.add('bg-red-500');
+    } else {
+        statusText.textContent = '服务断开';
+        indicator.classList.add('bg-slate-500');
+    }
+}
+
 function connectMqtt() {
     const clientId = 'localdrop_' + Math.random().toString(16).substr(2, 8);
-    document.getElementById('connection-status').textContent = '🟡 连接服务器...';
+    updateConnectionStatus('connecting');
     
     mqttClient = mqtt.connect(MQTT_BROKER, {
         clientId: clientId
@@ -171,7 +195,7 @@ function connectMqtt() {
 
     mqttClient.on('connect', () => {
         console.log('Connected to MQTT Broker');
-        document.getElementById('connection-status').textContent = '🟢 服务已连接';
+        updateConnectionStatus('connected');
         
         // 订阅房间广播
         mqttClient.subscribe(`${TOPIC_PREFIX}/${myIp}/broadcast`);
@@ -190,11 +214,11 @@ function connectMqtt() {
     
     mqttClient.on('error', (err) => {
         console.error('MQTT Error:', err);
-        document.getElementById('connection-status').textContent = '🔴 服务错误';
+        updateConnectionStatus('error');
     });
 
     mqttClient.on('offline', () => {
-        document.getElementById('connection-status').textContent = '⚪ 服务断开';
+        updateConnectionStatus('offline');
     });
 
     mqttClient.on('message', (topic, message) => {
@@ -280,21 +304,40 @@ function prunePeers() {
 
 function renderPeers() {
     const users = Object.values(peers);
-    // 复用之前的 updatePeers 逻辑，这里重命名为 renderPeers 避免冲突
-    // 逻辑基本一致，只需要把之前的 updatePeers 函数体搬过来或者适配一下
-    
     peersContainer.innerHTML = '';
     
     users.forEach(user => {
         const peerEl = document.createElement('div');
-        peerEl.className = 'peer-item';
+        // Tailwind classes for new design
+        peerEl.className = 'flex items-center p-4 bg-white/5 rounded-2xl border border-transparent hover:border-blue-500/50 cursor-pointer transition-all mb-3';
         
-        // 长按/右键检测逻辑
+        // Generate color for the icon
+        const color = getDeviceColor(user.name); // returns HSL
+        const bgStyle = color.replace('60%)', '20%)');
+        
+        // Inner HTML structure
+        peerEl.innerHTML = `
+            <div class="w-12 h-12 rounded-xl flex items-center justify-center mr-4" style="background-color: ${bgStyle}; color: ${color}">
+                <i class="fas fa-mobile-alt text-xl"></i>
+            </div>
+            <div class="flex-grow">
+                <div class="font-bold text-sm text-slate-200">${user.name} ${user.name === myName ? '(本机)' : ''}</div>
+                <div class="text-xs text-slate-500">${user.id || 'Unknown ID'}</div>
+            </div>
+            <i class="fas fa-chevron-right text-slate-600 text-xs"></i>
+        `;
+
+        // Long press / Click logic
         let pressTimer;
+        let isLongPress = false;
         
         const startPress = (e) => {
             if (e.type === 'mousedown' && e.button !== 0) return; 
+            isLongPress = false;
             pressTimer = setTimeout(() => {
+                isLongPress = true;
+                // Vibration feedback if supported
+                if (navigator.vibrate) navigator.vibrate(50);
                 initiateTextChat(user.id);
             }, 600);
         };
@@ -316,36 +359,23 @@ function renderPeers() {
         peerEl.addEventListener('touchend', cancelPress);
 
         peerEl.onclick = (e) => {
-            if (pressTimer) {
+            if (!isLongPress) {
                 initiateFileTransfer(user.id);
             }
         };
         
-        const icon = document.createElement('div');
-        icon.className = 'device-icon peer';
-        // 根据是否是本机设置显示文本
-        if (user.name === myName) {
-            icon.textContent = '本机';
-        } else {
-            icon.textContent = '对方';
-        }
-        // 设置唯一颜色边框，便于区分
-        icon.style.borderColor = getDeviceColor(user.name);
-        
-        const name = document.createElement('div');
-        name.className = 'peer-name';
-        name.textContent = user.name;
-        
-        peerEl.appendChild(icon);
-        peerEl.appendChild(name);
         peersContainer.appendChild(peerEl);
     });
 
     if (users.length === 0) {
-        const scanning = document.createElement('div');
-        scanning.className = 'scanning-pulse';
-        scanning.textContent = '正在扫描设备...';
-        peersContainer.appendChild(scanning);
+        peersContainer.innerHTML = `
+            <div class="flex items-center justify-center p-8 border-2 border-dashed border-white/5 rounded-2xl scanning-pulse">
+                <div class="text-center">
+                    <div class="inline-block animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent mb-2"></div>
+                    <p class="text-xs text-slate-500">发现同一局域网下的设备...</p>
+                </div>
+            </div>
+        `;
     }
 }
 
@@ -828,70 +858,44 @@ document.getElementById('btn-accept').onclick = async () => {
 };
 
 // 添加设置下载目录的功能
-const downloadDirBtn = document.createElement('button');
-downloadDirBtn.textContent = '📂 启用自动保存到文件夹';
-downloadDirBtn.className = 'btn';
-downloadDirBtn.style.marginTop = '15px';
-downloadDirBtn.style.width = '100%';
-downloadDirBtn.style.backgroundColor = '#2d2d2d';
-downloadDirBtn.style.color = '#ccc';
-downloadDirBtn.style.border = '1px dashed #555';
-downloadDirBtn.style.borderRadius = '8px';
-downloadDirBtn.style.padding = '12px';
-downloadDirBtn.style.transition = 'all 0.3s ease';
+const downloadDirBtn = document.getElementById('download-dir-btn');
+const downloadDirText = document.getElementById('download-dir-text');
 
 // 封装按钮状态更新函数
 function updateDownloadBtnState(state) {
     let folderName = downloadDirectoryHandle ? downloadDirectoryHandle.name : '';
-    if (!folderName) folderName = '默认文件夹';
     
     if (state === 'active') {
-        downloadDirBtn.textContent = `✅ 已启用自动保存 (${folderName})`;
-        downloadDirBtn.style.backgroundColor = '#1e3a29'; // 暗绿色
-        downloadDirBtn.style.borderColor = '#4caf50';
-        downloadDirBtn.style.color = '#4caf50';
-        downloadDirBtn.style.borderStyle = 'solid';
+        downloadDirText.textContent = `自动保存到: "${folderName}"`;
+        downloadDirText.classList.remove('text-amber-200/70');
+        downloadDirText.classList.add('text-green-400');
+        
+        downloadDirBtn.textContent = '修改';
+        downloadDirBtn.classList.remove('text-amber-500', 'hover:text-amber-400');
+        downloadDirBtn.classList.add('text-green-500', 'hover:text-green-400');
     } else if (state === 'pending') {
-        downloadDirBtn.textContent = `📂 点击恢复自动保存到 "${folderName}"`;
-        downloadDirBtn.style.backgroundColor = '#2d2d2d';
-        downloadDirBtn.style.borderColor = '#ff9800'; // 橙色提示
-        downloadDirBtn.style.color = '#ff9800';
-        downloadDirBtn.style.borderStyle = 'dashed';
+        downloadDirText.textContent = `点击恢复自动保存: "${folderName}"`;
+        downloadDirText.classList.add('text-amber-200/70');
+        downloadDirText.classList.remove('text-green-400');
+        
+        downloadDirBtn.textContent = '恢复';
     } else {
-        downloadDirBtn.textContent = '📂 启用自动保存到文件夹';
-        downloadDirBtn.style.backgroundColor = '#2d2d2d';
-        downloadDirBtn.style.borderColor = '#555';
-        downloadDirBtn.style.color = '#ccc';
-        downloadDirBtn.style.borderStyle = 'dashed';
+        downloadDirText.textContent = `自动保存: (未启用)`;
+        downloadDirText.classList.add('text-amber-200/70');
+        downloadDirText.classList.remove('text-green-400');
+        
+        downloadDirBtn.textContent = '启用';
     }
 }
-
-downloadDirBtn.onmouseover = () => {
-    if (downloadDirBtn.textContent.includes('已启用')) return;
-    downloadDirBtn.style.borderColor = '#4285f4';
-    downloadDirBtn.style.color = '#fff';
-    downloadDirBtn.style.backgroundColor = '#333';
-};
-downloadDirBtn.onmouseout = () => {
-    if (downloadDirBtn.textContent.includes('已启用')) return;
-    if (downloadDirBtn.textContent.includes('恢复')) {
-        downloadDirBtn.style.borderColor = '#ff9800';
-        downloadDirBtn.style.color = '#ff9800';
-        downloadDirBtn.style.backgroundColor = '#2d2d2d';
-    } else {
-        downloadDirBtn.style.borderColor = '#555';
-        downloadDirBtn.style.color = '#ccc';
-        downloadDirBtn.style.backgroundColor = '#2d2d2d';
-    }
-};
 
 downloadDirBtn.onclick = async () => {
     try {
         let handleToUse = downloadDirectoryHandle;
         let isChangeRequest = false;
 
-        // 1. 如果当前已启用（绿色状态），询问是否更改
-        if (handleToUse && downloadDirBtn.textContent.includes('已启用')) {
+        // 1. 如果当前已启用（active 或 pending 且有 handle），询问是否更改
+        // 注意：这里逻辑稍微调整，只要点击修改，且已经有 active 状态，就视为更改
+        if (handleToUse && downloadDirBtn.textContent === '修改') {
             if (confirm('是否更改保存文件夹？\n点击“确定”选择新文件夹，点击“取消”保持不变。')) {
                 isChangeRequest = true;
                 handleToUse = null; // 标记为需要新句柄
@@ -936,8 +940,8 @@ downloadDirBtn.onclick = async () => {
         }
     }
 };
-// 将按钮添加到页面合适位置 (例如 my-info 下面)
-document.getElementById('my-info').appendChild(downloadDirBtn);
+// 移除旧的 appendChild
+// document.getElementById('my-info').appendChild(downloadDirBtn);
 
 
 async function acceptTransfer(offerMsg) {

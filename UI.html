@@ -6,8 +6,51 @@
     <title>局域网快传 - 重新定义传输</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css">
-    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        :root {
+            --primary: #3b82f6;
+            --bg: #0f172a;
+        }
+        body {
+            background-color: var(--bg);
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow-x: hidden;
+        }
+        .glow-circle {
+            position: absolute;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(59, 130, 246, 0.15) 0%, transparent 70%);
+            z-index: 0;
+        }
+        .device-card {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+        }
+        .device-card:hover {
+            border-color: var(--primary);
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px -10px rgba(59, 130, 246, 0.3);
+        }
+        .pulse-animation {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.95); opacity: 0.5; }
+            50% { transform: scale(1.05); opacity: 0.8; }
+            100% { transform: scale(0.95); opacity: 0.5; }
+        }
+        .upload-area {
+            border: 2px dashed rgba(255, 255, 255, 0.2);
+            transition: all 0.3s ease;
+        }
+        .upload-area:hover {
+            border-color: var(--primary);
+            background: rgba(59, 130, 246, 0.05);
+        }
+    </style>
 </head>
 <body class="min-h-screen flex flex-col">
 
@@ -30,11 +73,11 @@
         
         <div class="flex items-center gap-6 text-sm text-slate-400">
             <div class="hidden sm:block">
-                网络 ID: <span class="text-slate-200 font-mono" id="network-id">正在获取...</span>
+                网络 ID: <span class="text-slate-200 font-mono">74.48.159.238</span>
             </div>
-            <div class="flex items-center gap-2 px-3 py-1 bg-green-500/10 text-green-400 rounded-full border border-green-500/20" id="connection-status-container">
-                <span class="w-2 h-2 bg-green-500 rounded-full pulse-animation" id="connection-indicator"></span>
-                <span id="connection-status">连接中...</span>
+            <div class="flex items-center gap-2 px-3 py-1 bg-green-500/10 text-green-400 rounded-full border border-green-500/20">
+                <span class="w-2 h-2 bg-green-500 rounded-full pulse-animation"></span>
+                服务已连接
             </div>
         </div>
     </header>
@@ -43,14 +86,14 @@
     <main class="relative z-10 flex-grow flex flex-col items-center justify-center px-6 py-8">
         
         <!-- 用户身份展示 -->
-        <div class="mb-12 text-center" id="my-info">
+        <div class="mb-12 text-center">
             <div class="relative inline-block">
                 <div class="w-24 h-24 bg-blue-600 rounded-full flex items-center justify-center text-4xl shadow-2xl border-4 border-slate-800">
                     🐬
                 </div>
                 <div class="absolute -bottom-1 -right-1 w-8 h-8 bg-green-500 border-4 border-slate-900 rounded-full"></div>
             </div>
-            <h2 class="mt-4 text-2xl font-bold" id="my-name">正在连接... <span class="text-blue-400">(在线)</span></h2>
+            <h2 class="mt-4 text-2xl font-bold">可爱的海豚 <span class="text-blue-400">(在线)</span></h2>
             <p class="text-slate-500 text-sm">这是您的设备标识，其他设备通过此名称发送文件</p>
         </div>
 
@@ -66,9 +109,21 @@
                     <span class="text-[10px] bg-white/5 px-2 py-1 rounded text-slate-400 uppercase tracking-widest">Scanning</span>
                 </div>
                 
-                <div class="space-y-3" id="peers-container">
+                <div class="space-y-3">
+                    <!-- 设备项 -->
+                    <div class="flex items-center p-4 bg-white/5 rounded-2xl border border-transparent hover:border-blue-500/50 cursor-pointer transition-all">
+                        <div class="w-12 h-12 bg-purple-500/20 text-purple-400 rounded-xl flex items-center justify-center mr-4">
+                            <i class="fas fa-mobile-alt text-xl"></i>
+                        </div>
+                        <div class="flex-grow">
+                            <div class="font-bold text-sm">智能手机 - Android</div>
+                            <div class="text-xs text-slate-500">192.168.1.15</div>
+                        </div>
+                        <i class="fas fa-chevron-right text-slate-600 text-xs"></i>
+                    </div>
+
                     <!-- 占位等待 -->
-                    <div class="flex items-center justify-center p-8 border-2 border-dashed border-white/5 rounded-2xl scanning-pulse">
+                    <div class="flex items-center justify-center p-8 border-2 border-dashed border-white/5 rounded-2xl">
                         <div class="text-center">
                             <div class="inline-block animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent mb-2"></div>
                             <p class="text-xs text-slate-500">发现同一局域网下的设备...</p>
@@ -83,7 +138,7 @@
                     <i class="fas fa-paper-plane text-blue-400"></i> 发送文件
                 </h3>
                 
-                <div class="upload-area flex-grow rounded-2xl flex flex-col items-center justify-center p-8 cursor-pointer group" onclick="document.getElementById('file-input').click()">
+                <div class="upload-area flex-grow rounded-2xl flex flex-col items-center justify-center p-8 cursor-pointer group">
                     <div class="w-16 h-16 bg-blue-600/10 text-blue-500 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
                         <i class="fas fa-cloud-arrow-up text-2xl"></i>
                     </div>
@@ -95,9 +150,9 @@
                 <div class="mt-6 flex items-center justify-between p-3 bg-amber-500/5 border border-amber-500/20 rounded-xl">
                     <div class="flex items-center gap-3">
                         <i class="fas fa-folder-open text-amber-500"></i>
-                        <span class="text-xs text-amber-200/70 truncate w-32" id="download-dir-text">自动保存到: "\"</span>
+                        <span class="text-xs text-amber-200/70 truncate w-32">自动保存到: "\"</span>
                     </div>
-                    <button class="text-[10px] font-bold text-amber-500 hover:text-amber-400" id="download-dir-btn">修改</button>
+                    <button class="text-[10px] font-bold text-amber-500 hover:text-amber-400">修改</button>
                 </div>
             </div>
 
@@ -115,57 +170,5 @@
         <p class="text-[10px] text-slate-600 uppercase tracking-[0.2em]">P2P Encryption · No Cloud · High Speed</p>
     </footer>
 
-    <!-- Hidden file input -->
-    <input type="file" id="file-input" style="display: none;" multiple>
-
-    <!-- Dialogs -->
-    <div id="receive-dialog" class="dialog hidden">
-        <div class="dialog-content">
-            <h3>文件传输请求</h3>
-            <p><span id="sender-name">未知用户</span> 想要发送给你:</p>
-            <p id="file-name" class="file-name">example.txt</p>
-            <p id="file-size" class="file-size">1.2 MB</p>
-            <div class="dialog-actions">
-                <button id="btn-reject" class="btn secondary">拒绝</button>
-                <button id="btn-accept" class="btn primary">接收</button>
-            </div>
-        </div>
-    </div>
-
-    <div id="progress-dialog" class="dialog hidden">
-        <div class="dialog-content">
-            <h3 id="transfer-status">传输中...</h3>
-            <div class="progress-bar">
-                <div id="progress-fill" class="progress-fill"></div>
-            </div>
-            <p id="progress-text">0%</p>
-        </div>
-    </div>
-
-    <!-- Text Chat Dialogs -->
-    <div id="send-text-dialog" class="dialog hidden">
-        <div class="dialog-content">
-            <h3>发送消息</h3>
-            <textarea id="text-input" placeholder="在此输入消息..." rows="5" style="width: 100%; margin: 10px 0; padding: 8px; box-sizing: border-box; resize: vertical; background: #334155; color: white; border: 1px solid #475569; border-radius: 8px;"></textarea>
-            <div class="dialog-actions">
-                <button id="btn-cancel-text" class="btn secondary">取消</button>
-                <button id="btn-send-text" class="btn primary">发送</button>
-            </div>
-        </div>
-    </div>
-
-    <div id="receive-text-dialog" class="dialog hidden">
-        <div class="dialog-content">
-            <h3>收到消息</h3>
-            <p>来自 <span id="text-sender-name">未知用户</span>:</p>
-            <div id="text-content" style="background: #334155; padding: 15px; border-radius: 8px; text-align: left; margin: 10px 0; white-space: pre-wrap; max-height: 200px; overflow-y: auto; color: white;"></div>
-            <div class="dialog-actions">
-                <button id="btn-close-text" class="btn primary">关闭</button>
-                <button id="btn-copy-text" class="btn secondary">复制</button>
-            </div>
-        </div>
-    </div>
-
-    <script src="script.js"></script>
 </body>
 </html>
