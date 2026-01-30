@@ -919,7 +919,7 @@ function updateDownloadBtnState(state) {
     let folderName = downloadDirectoryHandle ? downloadDirectoryHandle.name : '';
     
     if (state === 'active') {
-        downloadDirText.textContent = `自动保存到: "${folderName}"`;
+        downloadDirText.textContent = `自动保存到: ${folderName}`;
         downloadDirText.classList.remove('text-amber-200/70');
         downloadDirText.classList.add('text-green-400');
         
@@ -927,7 +927,7 @@ function updateDownloadBtnState(state) {
         downloadDirBtn.classList.remove('text-amber-500', 'hover:text-amber-400');
         downloadDirBtn.classList.add('text-green-500', 'hover:text-green-400');
     } else if (state === 'pending') {
-        downloadDirText.textContent = `点击恢复保存到: "${folderName}"`;
+        downloadDirText.textContent = `点击恢复保存到: ${folderName}`;
         downloadDirText.classList.add('text-amber-200/70');
         downloadDirText.classList.remove('text-green-400');
         
