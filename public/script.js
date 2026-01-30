@@ -307,6 +307,8 @@ function renderPeers() {
     peersContainer.innerHTML = '';
     
     users.forEach(user => {
+        if (user.id === myId) return; // 不显示本机
+
         const peerEl = document.createElement('div');
         // Tailwind classes for new design
         peerEl.className = 'flex items-center p-4 bg-white/5 rounded-2xl border border-transparent hover:border-blue-500/50 cursor-pointer transition-all mb-3';
@@ -872,7 +874,7 @@ function updateDownloadBtnState(state) {
         
         downloadDirBtn.textContent = '修改';
         downloadDirBtn.classList.remove('text-amber-500', 'hover:text-amber-400');
-        downloadDirBtn.classList.add('text-green-500', 'hover:text-green-400');
+        downloadDirBtn.classList.add('tgree到n-500', 'hover:text-green-400');
     } else if (state === 'pending') {
         downloadDirText.textContent = `点击恢复自动保存: "${folderName}"`;
         downloadDirText.classList.add('text-amber-200/70');
