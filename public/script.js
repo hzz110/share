@@ -318,14 +318,7 @@ function renderPeers() {
 
         if (isMobile) {
             // Mobile Style (Glass Morphism)
-            const isSelected = selectedPeerId === user.id;
-            const btnClass = isSelected 
-                ? "bg-blue-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold pointer-events-none transition-colors"
-                : "bg-blue-600/20 text-blue-400 px-4 py-1.5 rounded-lg text-xs font-bold pointer-events-none transition-colors";
-            const btnText = isSelected ? "已选择" : "选择";
-            const borderClass = isSelected ? "border-blue-500" : "border-transparent";
-
-            peerEl.className = `glass-morphism p-4 rounded-2xl flex items-center active:scale-95 transition-transform mb-3 border ${borderClass}`;
+            peerEl.className = `glass-morphism p-4 rounded-2xl flex items-center active:scale-95 transition-transform mb-3 border border-transparent hover:border-blue-500/30`;
             peerEl.innerHTML = `
                 <div class="w-12 h-12 rounded-xl flex items-center justify-center mr-4" style="background-color: ${bgStyle}; color: ${color}">
                     <i class="fas fa-mobile-screen text-xl"></i>
@@ -334,11 +327,11 @@ function renderPeers() {
                     <div class="font-bold text-sm">${user.name} ${user.name === myName ? '(本机)' : ''}</div>
                     <div class="text-[10px] text-slate-500">${user.id || 'Unknown ID'}</div>
                 </div>
-                <button class="${btnClass}">${btnText}</button>
+                <button class="w-10 h-10 rounded-full bg-blue-600/20 text-blue-400 flex items-center justify-center active:scale-90 transition-transform" onclick="event.stopPropagation(); initiateTextChat('${user.id}')">
+                    <i class="fas fa-comment-dots"></i>
+                </button>
             `;
-            
-            // On mobile, click selects the peer
-            peerEl.onclick = () => selectPeer(user.id);
+            // Note: Shared onclick below handles the file transfer trigger
             
         } else {
             // Desktop Style
