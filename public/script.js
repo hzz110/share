@@ -168,7 +168,8 @@ function updateConnectionStatus(status) {
     if (!statusText || !indicator) return;
 
     // Reset indicator classes but keep base ones
-    indicator.className = 'w-2 h-2 rounded-full pulse-animation';
+    const baseClasses = isMobile ? 'w-1.5 h-1.5 rounded-full pulse-animation' : 'w-2 h-2 rounded-full pulse-animation';
+    indicator.className = baseClasses;
     
     if (status === 'connected') {
         statusText.textContent = '服务已连接';
@@ -310,24 +311,51 @@ function renderPeers() {
         if (user.id === myId) return; // 不显示本机
 
         const peerEl = document.createElement('div');
-        // Tailwind classes for new design
-        peerEl.className = 'flex items-center p-4 bg-white/5 rounded-2xl border border-transparent hover:border-blue-500/50 cursor-pointer transition-all mb-3';
         
         // Generate color for the icon
         const color = getDeviceColor(user.name); // returns HSL
         const bgStyle = color.replace('60%)', '20%)');
-        
-        // Inner HTML structure
-        peerEl.innerHTML = `
-            <div class="w-12 h-12 rounded-xl flex items-center justify-center mr-4" style="background-color: ${bgStyle}; color: ${color}">
-                <i class="fas fa-mobile-alt text-xl"></i>
-            </div>
-            <div class="flex-grow">
-                <div class="font-bold text-sm text-slate-200">${user.name} ${user.name === myName ? '(本机)' : ''}</div>
-                <div class="text-xs text-slate-500">${user.id || 'Unknown ID'}</div>
-            </div>
-            <i class="fas fa-chevron-right text-slate-600 text-xs"></i>
-        `;
+
+        if (isMobile) {
+            // Mobile Style (Glass Morphism)
+            const isSelected = selectedPeerId === user.id;
+            const btnClass = isSelected 
+                ? "bg-blue-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold pointer-events-none transition-colors"
+                : "bg-blue-600/20 text-blue-400 px-4 py-1.5 rounded-lg text-xs font-bold pointer-events-none transition-colors";
+            const btnText = isSelected ? "已选择" : "选择";
+            const borderClass = isSelected ? "border-blue-500" : "border-transparent";
+
+            peerEl.className = `glass-morphism p-4 rounded-2xl flex items-center active:scale-95 transition-transform mb-3 border ${borderClass}`;
+            peerEl.innerHTML = `
+                <div class="w-12 h-12 rounded-xl flex items-center justify-center mr-4" style="background-color: ${bgStyle}; color: ${color}">
+                    <i class="fas fa-mobile-screen text-xl"></i>
+                </div>
+                <div class="flex-grow">
+                    <div class="font-bold text-sm">${user.name} ${user.name === myName ? '(本机)' : ''}</div>
+                    <div class="text-[10px] text-slate-500">${user.id || 'Unknown ID'}</div>
+                </div>
+                <button class="${btnClass}">${btnText}</button>
+            `;
+            
+            // On mobile, click selects the peer
+            peerEl.onclick = () => selectPeer(user.id);
+            
+        } else {
+            // Desktop Style
+            peerEl.className = 'flex items-center p-4 bg-white/5 rounded-2xl border border-transparent hover:border-blue-500/50 cursor-pointer transition-all mb-3';
+            
+            // Inner HTML structure
+            peerEl.innerHTML = `
+                <div class="w-12 h-12 rounded-xl flex items-center justify-center mr-4" style="background-color: ${bgStyle}; color: ${color}">
+                    <i class="fas fa-mobile-alt text-xl"></i>
+                </div>
+                <div class="flex-grow">
+                    <div class="font-bold text-sm text-slate-200">${user.name} ${user.name === myName ? '(本机)' : ''}</div>
+                    <div class="text-xs text-slate-500">${user.id || 'Unknown ID'}</div>
+                </div>
+                <i class="fas fa-chevron-right text-slate-600 text-xs"></i>
+            `;
+        }
 
         // Long press / Click logic
         let pressTimer;
@@ -370,14 +398,23 @@ function renderPeers() {
     });
 
     if (users.length === 0) {
-        peersContainer.innerHTML = `
-            <div class="flex items-center justify-center p-8 border-2 border-dashed border-white/5 rounded-2xl scanning-pulse">
-                <div class="text-center">
-                    <div class="inline-block animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent mb-2"></div>
-                    <p class="text-xs text-slate-500">发现同一局域网下的设备...</p>
+        if (isMobile) {
+            peersContainer.innerHTML = `
+                <div class="border-2 border-dashed border-white/5 rounded-2xl p-6 flex flex-col items-center justify-center text-slate-600 scanning-pulse">
+                    <i class="fas fa-user-plus text-xl mb-2 opacity-20"></i>
+                    <p class="text-[10px]">等待其他设备加入局域网</p>
                 </div>
-            </div>
-        `;
+            `;
+        } else {
+            peersContainer.innerHTML = `
+                <div class="flex items-center justify-center p-8 border-2 border-dashed border-white/5 rounded-2xl scanning-pulse">
+                    <div class="text-center">
+                        <div class="inline-block animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent mb-2"></div>
+                        <p class="text-xs text-slate-500">发现同一局域网下的设备...</p>
+                    </div>
+                </div>
+            `;
+        }
     }
 }
 
@@ -399,6 +436,27 @@ const rtcConfig = {
 // --- 发送方逻辑 ---
 
 let selectedPeerId = null;
+
+function handleMobileSend() {
+    if (selectedPeerId) {
+        fileInput.click();
+    } else {
+        // If there's only one peer, auto-select and send?
+        const users = Object.values(peers).filter(u => u.id !== myId);
+        if (users.length === 1) {
+            selectedPeerId = users[0].id;
+            renderPeers();
+            fileInput.click();
+        } else {
+            alert('请先选择一个设备');
+        }
+    }
+}
+
+function selectPeer(peerId) {
+    selectedPeerId = peerId;
+    renderPeers();
+}
 
 function initiateFileTransfer(peerId) {
     selectedPeerId = peerId;

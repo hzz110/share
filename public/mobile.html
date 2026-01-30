@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>局域网快传 - 移动端</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        :root {
+            --primary: #3b82f6;
+            --bg: #0f172a;
+        }
+        body {
+            background-color: var(--bg);
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+            overflow-x: hidden;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .safe-area-bottom {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+        .glass-morphism {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .active-glow {
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.4);
+        }
+        /* 移动端雷达动画 */
+        .radar-wave {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            border-radius: 50%;
+            animation: wave 3s infinite linear;
+        }
+        @keyframes wave {
+            0% { width: 80px; height: 80px; opacity: 1; }
+            100% { width: 300px; height: 300px; opacity: 0; }
+        }
+        .wave-delay-1 { animation-delay: 1s; }
+        .wave-delay-2 { animation-delay: 2s; }
+
+        .action-sheet {
+            border-radius: 2rem 2rem 0 0;
+            box-shadow: 0 -10px 40px rgba(0,0,0,0.5);
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- 顶部导航 -->
+    <nav class="p-5 flex justify-between items-center z-20">
+        <div class="flex flex-col">
+            <h1 class="text-xl font-bold tracking-tight">局域网快传</h1>
+            <span class="text-[10px] font-mono text-blue-400 font-semibold uppercase tracking-wider">chuanwenjian.com</span>
+        </div>
+        <div class="flex items-center gap-3">
+            <div class="bg-green-500/10 border border-green-500/20 px-3 py-1 rounded-full flex items-center gap-1.5">
+                <span id="connection-indicator" class="w-1.5 h-1.5 bg-green-500 rounded-full"></span>
+                <span id="connection-status" class="text-[10px] text-green-400 font-bold uppercase">Online</span>
+            </div>
+            <button class="w-10 h-10 glass-morphism rounded-full flex items-center justify-center text-slate-300">
+                <i class="fas fa-cog"></i>
+            </button>
+        </div>
+    </nav>
+
+    <!-- 主容器 -->
+    <main class="flex-grow flex flex-col px-5 relative overflow-hidden">
+        
+        <!-- 背景雷达装饰 -->
+        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-0 opacity-50">
+            <div class="radar-wave"></div>
+            <div class="radar-wave wave-delay-1"></div>
+            <div class="radar-wave wave-delay-2"></div>
+        </div>
+
+        <!-- 当前用户状态 -->
+        <div class="relative z-10 flex flex-col items-center mt-6 mb-10">
+            <div class="relative">
+                <div class="w-24 h-24 bg-blue-600 rounded-3xl flex items-center justify-center text-4xl shadow-2xl rotate-3">
+                    🐬
+                </div>
+                <div class="absolute -bottom-2 -right-2 w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center border-4 border-slate-900">
+                    <i class="fas fa-check text-[10px] text-white"></i>
+                </div>
+            </div>
+            <h2 id="my-name" class="mt-4 text-xl font-bold">可爱的海豚</h2>
+            <p class="text-slate-400 text-xs mt-1">ID: <span id="network-id">正在获取...</span></p>
+        </div>
+
+        <!-- 设备列表区域 -->
+        <div class="relative z-10 flex-grow">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                    <i class="fas fa-bullseye text-blue-500"></i> 附近的设备
+                </h3>
+                <span class="text-[10px] text-slate-500 italic">正在扫描...</span>
+            </div>
+
+            <!-- 设备滚动列表 -->
+            <div id="peers-container" class="space-y-3 pb-32">
+                <!-- 列表将由 JS 动态生成 -->
+                <div class="border-2 border-dashed border-white/5 rounded-2xl p-6 flex flex-col items-center justify-center text-slate-600">
+                    <div class="inline-block animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent mb-2"></div>
+                    <p class="text-[10px]">等待其他设备加入局域网</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- 底部固定动作区 -->
+    <div class="fixed bottom-0 left-0 right-0 z-30 action-sheet glass-morphism px-6 pt-6 pb-8 safe-area-bottom">
+        <div class="flex flex-col gap-4">
+            
+            <!-- 温馨提醒 -->
+            <div class="bg-blue-500/5 border border-blue-500/10 rounded-xl p-3">
+                <p class="text-[10px] text-blue-300 text-center leading-relaxed">
+                    <i class="fas fa-info-circle mr-1"></i>
+                    提示：需确保设备连接在 <span class="text-white font-bold">同一个路由器/WiFi</span> 下
+                </p>
+            </div>
+
+            <!-- 发送按钮 -->
+            <button onclick="handleMobileSend()" class="w-full bg-blue-600 active:bg-blue-700 text-white rounded-2xl py-4 flex items-center justify-center gap-3 shadow-lg shadow-blue-500/30 transition-all active:scale-95">
+                <i class="fas fa-plus-circle text-xl"></i>
+                <span class="font-bold tracking-wider text-lg">选择并发送文件</span>
+            </button>
+            
+            <!-- 存储路径提示 -->
+            <div class="flex justify-center">
+                <p class="text-[10px] text-slate-500">保存路径: <span class="text-slate-400">系统相册 / 下载文件夹</span></p>
+                
+                <!-- 自动保存路径 (隐藏或简化显示) -->
+                <div class="hidden flex items-center gap-3">
+                     <span class="text-xs text-amber-200/70 truncate w-32" id="download-dir-text"></span>
+                     <button class="text-[10px] font-bold text-amber-500 hover:text-amber-400" id="download-dir-btn">修改</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden file input -->
+    <input type="file" id="file-input" style="display: none;" multiple>
+
+    <!-- Dialogs -->
+    <div id="receive-dialog" class="dialog hidden">
+        <div class="dialog-content">
+            <h3>文件传输请求</h3>
+            <p><span id="sender-name">未知用户</span> 想要发送给你:</p>
+            <p id="file-name" class="file-name">example.txt</p>
+            <p id="file-size" class="file-size">1.2 MB</p>
+            <div class="dialog-actions">
+                <button id="btn-reject" class="btn secondary">拒绝</button>
+                <button id="btn-accept" class="btn primary">接收</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="progress-dialog" class="dialog hidden">
+        <div class="dialog-content">
+            <h3 id="transfer-status">传输中...</h3>
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <p id="progress-text">0%</p>
+        </div>
+    </div>
+
+    <!-- Text Chat Dialogs -->
+    <div id="send-text-dialog" class="dialog hidden">
+        <div class="dialog-content">
+            <h3>发送消息</h3>
+            <textarea id="text-input" placeholder="在此输入消息..." rows="5" style="width: 100%; margin: 10px 0; padding: 8px; box-sizing: border-box; resize: vertical; background: #334155; color: white; border: 1px solid #475569; border-radius: 8px;"></textarea>
+            <div class="dialog-actions">
+                <button id="btn-cancel-text" class="btn secondary">取消</button>
+                <button id="btn-send-text" class="btn primary">发送</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="receive-text-dialog" class="dialog hidden">
+        <div class="dialog-content">
+            <h3>收到消息</h3>
+            <p>来自 <span id="text-sender-name">未知用户</span>:</p>
+            <div id="text-content" style="background: #334155; padding: 15px; border-radius: 8px; text-align: left; margin: 10px 0; white-space: pre-wrap; max-height: 200px; overflow-y: auto; color: white;"></div>
+            <div class="dialog-actions">
+                <button id="btn-close-text" class="btn primary">关闭</button>
+                <button id="btn-copy-text" class="btn secondary">复制</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
